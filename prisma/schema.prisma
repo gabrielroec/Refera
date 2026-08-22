@@ -1,0 +1,217 @@
+// Refera — AI Visibility for Shopify
+// Datasource: Supabase Postgres.
+//   DATABASE_URL -> transaction-mode pooler (6543), used at runtime.
+//   DIRECT_URL   -> session-mode pooler (5432), used by `prisma migrate`.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Shopify OAuth sessions (managed by @shopify/shopify-app-session-storage-prisma)
+// ---------------------------------------------------------------------------
+
+model Session {
+  id            String    @id
+  shop          String
+  state         String
+  isOnline      Boolean   @default(false)
+  scope         String?
+  expires       DateTime?
+  accessToken   String
+  userId        BigInt?
+  firstName     String?
+  lastName      String?
+  email         String?
+  accountOwner  Boolean   @default(false)
+  locale        String?
+  collaborator  Boolean?  @default(false)
+  emailVerified Boolean?  @default(false)
+
+  refreshToken        String?
+  refreshTokenExpires DateTime?
+
+  @@index([shop])
+}
+
+// ---------------------------------------------------------------------------
+// Domain
+// ---------------------------------------------------------------------------
+
+enum Plan {
+  free
+  pro
+}
+
+enum ScanStatus {
+  queued
+  running
+  done
+  failed
+}
+
+enum FixType {
+  description
+  metafield
+  taxonomy
+}
+
+enum FixStatus {
+  suggested
+  approved
+  applied
+  rejected
+}
+
+/// One installed store.
+model Shop {
+  id     String @id @default(cuid())
+  /// myshopify domain, e.g. "refera-phbopjeb.myshopify.com"
+  domain String @unique
+
+  plan Plan @default(free)
+
+  /// Niche inferred from the catalogue during the first scan,
+  /// e.g. "running shoes and athletic apparel". Drives question generation.
+  niche         String?
+  name          String?
+  /// ISO-4217 currency, used when generating price-bounded questions.
+  currencyCode  String?
+  /// Primary locale, e.g. "pt-BR". Simulated questions are written in this language.
+  primaryLocale String?
+
+  scans Scan[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+/// A single end-to-end run: catalogue scan + AI simulations + score.
+model Scan {
+  id     String     @id @default(cuid())
+  shopId String
+  shop   Shop       @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  status ScanStatus @default(queued)
+
+  /// AI-readiness score, 0-100. Null until the scan reaches `done`.
+  score Int?
+  /// Dashboard breakdown: { dataScore, visibilityScore }.
+  scoreBreakdown Json?
+
+  /// Populated when status = failed.
+  error String?
+
+  /// Trigger.dev run id, for log lookups from the UI.
+  jobRunId String?
+
+  /// Denormalised counters so the dashboard renders without aggregates.
+  productsScanned Int @default(0)
+  issuesFound     Int @default(0)
+
+  startedAt  DateTime?
+  finishedAt DateTime?
+
+  products    ProductSnapshot[]
+  simulations Simulation[]
+
+  createdAt DateTime @default(now())
+
+  @@index([shopId, createdAt])
+}
+
+/// Point-in-time copy of one product as it existed during a scan.
+model ProductSnapshot {
+  id     String @id @default(cuid())
+  scanId String
+  scan   Scan   @relation(fields: [scanId], references: [id], onDelete: Cascade)
+
+  /// Shopify GID, e.g. "gid://shopify/Product/123".
+  productId String
+  handle    String?
+  title     String
+  /// Plain-text body (HTML stripped) — what an LLM would actually read.
+  description String?
+  /// Shopify Standard Product Taxonomy category, e.g. "Apparel & Accessories > Shoes".
+  category    String?
+  categoryId  String?
+  productType String?
+  vendor      String?
+  tags        String[] @default([])
+  imageCount  Int      @default(0)
+  hasAltText  Boolean  @default(false)
+
+  /// [{ namespace, key, type, value }]
+  metafields Json @default("[]")
+  /// [{ code, severity, message, field }]
+  issues     Json @default("[]")
+
+  fixes Fix[]
+
+  createdAt DateTime @default(now())
+
+  @@unique([scanId, productId])
+  @@index([scanId])
+}
+
+/// One buyer-intent question, executed N times against an LLM.
+model Simulation {
+  id     String @id @default(cuid())
+  scanId String
+  scan   Scan   @relation(fields: [scanId], references: [id], onDelete: Cascade)
+
+  question String
+  /// Model actually used, e.g. "gemini-3.6-flash".
+  model    String
+  /// Whether web-search grounding was enabled for this run.
+  grounded Boolean @default(false)
+
+  /// [{ run, appeared, position, competitors, excerpt, error? }]
+  executions Json @default("[]")
+
+  /// Rolled up from `executions` so UI and scorer avoid re-parsing JSON.
+  appearanceCount Int      @default(0)
+  runCount        Int      @default(0)
+  competitors     String[] @default([])
+
+  createdAt DateTime @default(now())
+
+  @@index([scanId])
+}
+
+/// An LLM-generated correction awaiting merchant approval.
+model Fix {
+  id                String          @id @default(cuid())
+  productSnapshotId String
+  productSnapshot   ProductSnapshot @relation(fields: [productSnapshotId], references: [id], onDelete: Cascade)
+
+  type   FixType
+  status FixStatus @default(suggested)
+
+  /// Issue code this fix resolves, e.g. "MISSING_DESCRIPTION".
+  issueCode String?
+  /// Merchant-facing explanation of why the change helps AI visibility.
+  rationale String?
+
+  /// Shaped by `type`:
+  ///   description -> { descriptionHtml }
+  ///   metafield   -> { namespace, key, type, value }
+  ///   taxonomy    -> { categoryId, category }
+  before Json
+  after  Json
+
+  appliedAt DateTime?
+  /// userErrors from the Admin API when an apply attempt fails.
+  error     String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([productSnapshotId])
+  @@index([status])
+}
