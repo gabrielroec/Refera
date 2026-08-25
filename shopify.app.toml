@@ -7,7 +7,7 @@ name = "Refera"
 # /store/<store>/charges/refera/pricing_plans — and changing it later breaks
 # every link that already exists.
 handle = "refera"
-application_url = "https://shopify.dev/apps/default-app-home"
+application_url = "https://refera-eight.vercel.app"
 embedded = true
 
 [access_scopes]
@@ -48,8 +48,24 @@ api_version = "2026-07"
   compliance_topics = [ "shop/redact" ]
 
 [auth]
-redirect_urls = [ "https://shopify.dev/apps/default-app-home/api/auth" ]
+# /auth/callback, not /api/auth: `authPathPrefix` in app/shopify.server.ts is
+# "/auth", and the library registers the callback under that prefix. The
+# template's default pointed somewhere this app never serves.
+redirect_urls = [ "https://refera-eight.vercel.app/auth/callback" ]
 
 [build]
-automatically_update_urls_on_dev = true
+# Off deliberately. Left on, the next `shopify app dev` rewrites
+# `application_url` above to whatever cloudflare tunnel it opened, and pushes
+# that to Shopify — so a laptop starting up points every merchant at a tunnel
+# that dies when the laptop sleeps.
+#
+# Local development therefore needs its own config file rather than this one:
+#   shopify app config link --config dev
+# writes shopify.app.dev.toml, and `shopify app dev --config dev` uses it.
+automatically_update_urls_on_dev = false
+
+# Send this file's contents on `shopify app deploy`, so the URLs and webhook
+# subscriptions here are what Shopify actually stores.
+include_config_on_deploy = true
+
 dev_store_url = "refera-phbopjeb.myshopify.com"
