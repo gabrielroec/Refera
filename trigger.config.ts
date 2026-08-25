@@ -37,11 +37,19 @@ export default defineConfig({
        * database while the dashboard reads another — with nothing on screen to
        * say so.
        *
-       * Needs VERCEL_ACCESS_TOKEN, VERCEL_PROJECT_ID and VERCEL_TEAM_ID set in
-       * the Trigger.dev environment. Skipped entirely when the build target is
-       * `dev`, so local `trigger dev` keeps using .env.
+       * The two ids are written here rather than left to environment variables
+       * because they are identifiers, not credentials — every Vercel API call
+       * still needs the token, so on their own they open nothing. That leaves
+       * exactly one secret to configure: VERCEL_ACCESS_TOKEN, in the Trigger.dev
+       * environment.
+       *
+       * Skipped entirely when the build target is `dev`, so local
+       * `trigger dev` keeps reading .env.
        */
-      syncVercelEnvVars(),
+      syncVercelEnvVars({
+        projectId: "prj_IPoZa0mhWwq6GODBeu7ZXQRJvv0E",
+        vercelTeamId: "team_nFDwAqY1t0oWIxQ1Vdwfou4e",
+      }),
     ],
   },
 });
