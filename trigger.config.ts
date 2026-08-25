@@ -7,9 +7,11 @@ export default defineConfig({
   project: process.env.TRIGGER_PROJECT_REF ?? "proj_replace_me",
   dirs: ["./trigger"],
   runtime: "node",
-  // A full scan (catalogue + 30 grounded LLM calls + fixes) stays well under
-  // this; the ceiling exists so a hung run cannot burn the free tier.
-  maxDuration: 1800,
+  // One hour. On the Gemini free tier the 30 grounded simulation calls alone
+  // can take 25+ minutes of rate-limit backoff, so 30 minutes was not enough
+  // (a real run died at exactly 1800s). The ceiling still exists so a hung run
+  // cannot burn the free tier indefinitely.
+  maxDuration: 3600,
   retries: {
     enabledInDev: true,
     default: {

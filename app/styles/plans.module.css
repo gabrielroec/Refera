@@ -1,0 +1,377 @@
+/*
+ * Plans screen.
+ *
+ * Plain CSS, no Polaris components — but deliberately inside the admin's own
+ * constraints, because Built for Shopify is the priority:
+ *
+ *  - Colour never carries meaning on its own. The recommended plan is marked by
+ *    centre position, a box-shadow ring and the primary button variant. No
+ *    tinted surface, no green, no purple.
+ *  - Subdued text is opacity, not a colour. The admin ships a dark theme, and a
+ *    baked grey would disappear in it. 0.7 over the admin's #303030 on white is
+ *    ~4.9:1, which clears WCAG AA for body text.
+ *  - The ring is box-shadow, not a wider border. A 2px border changes the border
+ *    box and shifts the card's interior by a pixel per side; box-shadow is
+ *    paint-only and cannot shift anything.
+ *  - Only transform and opacity animate. Both are composited, so neither can
+ *    contribute to CLS, which BFS measures on real traffic at 0.1.
+ *  - Every box that could change size reserves its height up front: the badge
+ *    slot exists on all three cards, the price block is sized to its tallest
+ *    state, and the CTA is the same height disabled as enabled.
+ */
+
+/* --------------------------------------------------------------------------
+ * Head of page
+ * -------------------------------------------------------------------------- */
+
+.intro {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-block-end: 20px;
+}
+
+.subhead {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  max-inline-size: 62ch;
+}
+
+/* The merchant's own measured result, restated as fact. */
+.measured {
+  font-weight: 600;
+}
+
+.currentPlan {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  padding: 12px 16px;
+  border: 1px solid var(--s-color-border, #e3e3e3);
+  border-radius: 12px;
+  background: var(--s-color-bg-surface, #fff);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.currentPlanLabel {
+  font-weight: 600;
+}
+
+.currentPlanDetail {
+  opacity: 0.7;
+}
+
+/* --------------------------------------------------------------------------
+ * Cards
+ * -------------------------------------------------------------------------- */
+
+.grid {
+  display: grid;
+  /* auto-fit collapses to 2-up near 880px and 1-up under 600px, with no media
+     queries — the same pattern as the tiles in ai-scale-card.tsx. */
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  padding: 20px;
+  border: 1px solid var(--s-color-border, #e3e3e3);
+  border-radius: 12px;
+  background: var(--s-color-bg-surface, #fff);
+  /* Composed so the ring and the hover lift can coexist in one property. */
+  box-shadow: var(--plan-ring, 0 0 0 0 transparent);
+  transition:
+    transform 120ms ease-out,
+    box-shadow 120ms ease-out;
+  /* `backwards` rather than a hidden base rule: if the stylesheet or JS is
+     slow, a card with `opacity: 0` in its base state never appears at all. */
+  animation: plan-in 240ms cubic-bezier(0.4, 0.22, 0.28, 1) backwards;
+}
+
+.card:nth-child(1) {
+  animation-delay: 0ms;
+}
+.card:nth-child(2) {
+  animation-delay: 60ms;
+}
+.card:nth-child(3) {
+  animation-delay: 120ms;
+}
+
+.card:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    var(--plan-ring, 0 0 0 0 transparent),
+    0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.featured {
+  --plan-ring: 0 0 0 2px var(--s-color-border-emphasis, #8a8a8a);
+}
+
+@keyframes plan-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 8px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Present and empty on the cards that carry no badge, so all three price
+   blocks start at the same y. */
+.badgeSlot {
+  display: flex;
+  min-height: 24px;
+  margin-block-end: 8px;
+}
+
+.badge {
+  align-self: flex-start;
+  padding: 2px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--s-color-border, #e3e3e3);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.name {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.positioning {
+  min-height: 36px;
+  margin-block: 4px 0;
+  font-size: 13px;
+  line-height: 1.4;
+  opacity: 0.7;
+}
+
+.priceBlock {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  min-height: 72px;
+  padding-block-start: 12px;
+}
+
+.price {
+  font-size: 28px;
+  font-weight: 650;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.priceUnit {
+  font-size: 13px;
+  font-weight: 500;
+  opacity: 0.7;
+}
+
+.priceCaption {
+  margin-block-start: 4px;
+  font-size: 13px;
+  line-height: 1.4;
+  opacity: 0.7;
+}
+
+/* --------------------------------------------------------------------------
+ * Call to action
+ * -------------------------------------------------------------------------- */
+
+.cta {
+  inline-size: 100%;
+  block-size: 36px;
+  margin-block-start: 16px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 120ms ease-out;
+}
+
+.cta:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.cta:not(:disabled):hover {
+  opacity: 0.88;
+}
+
+/* Charcoal, matching the admin's own primary button. Not green, not purple —
+   both are named rejection reasons. */
+.ctaPrimary {
+  background: var(--s-color-bg-fill-brand, #303030);
+  color: var(--s-color-text-brand-on-bg-fill, #fff);
+}
+
+.ctaSecondary {
+  background: var(--s-color-bg-surface, #fff);
+  border-color: currentColor;
+  color: inherit;
+}
+
+.ctaCaption {
+  margin-block-start: 8px;
+  font-size: 13px;
+  line-height: 1.4;
+  text-align: center;
+  opacity: 0.7;
+}
+
+/* --------------------------------------------------------------------------
+ * Value rows
+ * -------------------------------------------------------------------------- */
+
+.carryForward {
+  margin-block-start: 20px;
+  padding-block-start: 16px;
+  border-block-start: 1px solid var(--s-color-border, #e3e3e3);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.rows {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 28px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.rowLabel {
+  opacity: 0.7;
+}
+
+.rowValue {
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+}
+
+/* --------------------------------------------------------------------------
+ * Comparison table
+ * -------------------------------------------------------------------------- */
+
+/* Scrolls inside itself at narrow widths rather than letting the page body
+   scroll sideways. Not sticky: sticky against the admin's own scroll container
+   inside the iframe is a flicker and shift risk. */
+.tableWrap {
+  overflow-x: auto;
+}
+
+.table {
+  inline-size: 100%;
+  min-inline-size: 640px;
+  border-collapse: collapse;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.table th,
+.table td {
+  padding: 10px 12px;
+  text-align: start;
+  vertical-align: top;
+}
+
+.table thead th {
+  font-weight: 600;
+  border-block-end: 1px solid var(--s-color-border, #e3e3e3);
+}
+
+.table tbody td:first-child,
+.table tbody th:first-child {
+  inline-size: 34%;
+  font-weight: 400;
+  opacity: 0.7;
+}
+
+.table td + td,
+.table th + th {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Alternating fills so a label can be traced across four columns without a
+   cursor. Kept as a black alpha so it survives the admin's dark theme. */
+.table tbody tr:nth-child(even) {
+  background: rgba(0, 0, 0, 0.025);
+}
+
+.groupHeading th {
+  padding-block: 22px 6px;
+  font-weight: 600;
+  opacity: 1;
+  background: none;
+}
+
+.featuredColumn {
+  box-shadow: inset 2px 0 0 var(--s-color-border-emphasis, #8a8a8a);
+}
+
+.tick {
+  display: block;
+  inline-size: 16px;
+  block-size: 16px;
+}
+
+.tickExcluded {
+  opacity: 0.4;
+}
+
+.visuallyHidden {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.footnote {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  opacity: 0.55;
+}
+
+/* --------------------------------------------------------------------------
+ * Reduced motion
+ * -------------------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .card,
+  .card * {
+    animation: none !important;
+    transition: none !important;
+  }
+  .card:hover {
+    transform: none;
+  }
+}

@@ -1,4 +1,9 @@
-import { REFERA_METAFIELD_NAMESPACE } from "../lib/constants";
+import prisma from "../db.server";
+import {
+  FIX_PROMPT_VERSION,
+  FIX_TIMEOUT_MS,
+  REFERA_METAFIELD_NAMESPACE,
+} from "../lib/constants";
 import {
   adminQuery,
   METAFIELDS_SET_MUTATION,
@@ -22,163 +27,57 @@ import type {
 // Generation
 // ---------------------------------------------------------------------------
 
-const DESCRIPTION_SCHEMA = {
-  type: "OBJECT",
+/**
+ * One consolidated response per product. Empty string / empty array mean
+ * "nothing proposed for this part" — kept required so both providers return a
+ * predictable shape without strict-mode gymnastics.
+ */
+const PRODUCT_FIXES_SCHEMA = {
+  type: "object",
   properties: {
-    descriptionHtml: { type: "STRING" },
-    rationale: { type: "STRING" },
-  },
-  required: ["descriptionHtml", "rationale"],
-} as const;
-
-async function generateDescriptionFix(
-  product: ScannedProduct,
-  store: StoreContext,
-  issue: Issue,
-): Promise<GeneratedFix> {
-  const llm = getLLM();
-
-  const result = await llm.generateJSON<{
-    descriptionHtml: string;
-    rationale: string;
-  }>({
-    schema: DESCRIPTION_SCHEMA as unknown as object,
-    temperature: 0.6,
-    system:
-      "You write e-commerce product copy optimised for AI shopping assistants. Answer only with the requested JSON.",
-    prompt: `Store sells: ${store.niche ?? "unknown"}
-Write in this language: ${store.language ?? "en-US"}
-
-Product:
-- title: ${product.title}
-- type: ${product.productType ?? "unknown"}
-- vendor: ${product.vendor ?? "unknown"}
-- tags: ${product.tags.join(", ") || "none"}
-- current description: ${product.description || "(empty)"}
-
-Write a replacement description as simple HTML (<p>, <ul>, <li>, <strong> only).
-
-Requirements:
-- 200-400 words.
-- State plainly what it is, who it is for, and the concrete use case.
-- Include specific attributes (materials, dimensions, care, compatibility) — invent nothing you cannot infer from the title, type and tags. If a fact is unknown, leave it out rather than guessing.
-- Write so that an AI assistant answering "best <category> for <use case>" could quote it.
-- No marketing fluff, no invented awards, no invented prices.
-
-Also return "rationale": one sentence, in English, telling the merchant why this improves AI visibility.`,
-  });
-
-  const before: DescriptionPayload = {
-    descriptionHtml: product.descriptionHtml ?? "",
-  };
-  const after: DescriptionPayload = {
-    descriptionHtml: result.descriptionHtml,
-  };
-
-  return {
-    type: "description",
-    issueCode: issue.code,
-    rationale: result.rationale,
-    before,
-    after,
-  };
-}
-
-const METAFIELDS_SCHEMA = {
-  type: "OBJECT",
-  properties: {
+    descriptionHtml: {
+      type: "string",
+      description:
+        "Replacement product description as simple HTML, or empty string if not requested",
+    },
+    descriptionRationale: { type: "string" },
     metafields: {
-      type: "ARRAY",
+      type: "array",
       items: {
-        type: "OBJECT",
+        type: "object",
         properties: {
-          key: { type: "STRING" },
-          value: { type: "STRING" },
+          key: { type: "string" },
+          value: { type: "string" },
         },
         required: ["key", "value"],
       },
     },
-    rationale: { type: "STRING" },
+    metafieldsRationale: { type: "string" },
+    categoryId: {
+      type: "string",
+      description:
+        "The id of the chosen taxonomy category, copied verbatim from the candidate list, or empty string",
+    },
+    categoryRationale: { type: "string" },
   },
-  required: ["metafields", "rationale"],
+  required: [
+    "descriptionHtml",
+    "descriptionRationale",
+    "metafields",
+    "metafieldsRationale",
+    "categoryId",
+    "categoryRationale",
+  ],
 } as const;
 
-/**
- * Proposes structured attributes for a product.
- *
- * Everything is written under Refera's own namespace as single_line_text_field:
- * the MVP must never collide with a metafield definition the merchant already
- * owns, and inferring a merchant's custom types is not worth the failure modes.
- */
-async function generateMetafieldFixes(
-  product: ScannedProduct,
-  store: StoreContext,
-  issue: Issue,
-): Promise<GeneratedFix[]> {
-  const llm = getLLM();
-
-  const result = await llm.generateJSON<{
-    metafields: Array<{ key: string; value: string }>;
-    rationale: string;
-  }>({
-    schema: METAFIELDS_SCHEMA as unknown as object,
-    temperature: 0.4,
-    system:
-      "You extract structured product attributes. Answer only with the requested JSON.",
-    prompt: `Store sells: ${store.niche ?? "unknown"}
-
-Product:
-- title: ${product.title}
-- type: ${product.productType ?? "unknown"}
-- description: ${(product.description ?? "(empty)").slice(0, 1500)}
-- tags: ${product.tags.join(", ") || "none"}
-- existing metafields: ${
-      product.metafields.map((m) => `${m.namespace}.${m.key}`).join(", ") ||
-      "none"
-    }
-
-Propose 3-5 attributes that would help an AI assistant match this product to a specific shopper question.
-
-Rules:
-- "key": snake_case, English, generic across the category (e.g. "material", "use_case", "target_audience", "size_range", "care_instructions").
-- "value": plain text, under 200 characters, in ${store.language ?? "en-US"}.
-- Only state what you can infer from the information given. Do not invent measurements, certifications or prices.
-- Do not duplicate an existing metafield key.
-
-Also return "rationale": one sentence in English explaining the benefit to the merchant.`,
-  });
-
-  return result.metafields.map((mf) => {
-    const before: MetafieldPayload = {
-      namespace: REFERA_METAFIELD_NAMESPACE,
-      key: mf.key,
-      type: "single_line_text_field",
-      value: "",
-    };
-    const after: MetafieldPayload = {
-      namespace: REFERA_METAFIELD_NAMESPACE,
-      key: mf.key,
-      type: "single_line_text_field",
-      value: mf.value,
-    };
-    return {
-      type: "metafield" as const,
-      issueCode: issue.code,
-      rationale: result.rationale,
-      before,
-      after,
-    };
-  });
+interface ProductFixesResponse {
+  descriptionHtml: string;
+  descriptionRationale: string;
+  metafields: Array<{ key: string; value: string }>;
+  metafieldsRationale: string;
+  categoryId: string;
+  categoryRationale: string;
 }
-
-const TAXONOMY_PICK_SCHEMA = {
-  type: "OBJECT",
-  properties: {
-    categoryId: { type: "STRING" },
-    rationale: { type: "STRING" },
-  },
-  required: ["categoryId", "rationale"],
-} as const;
 
 interface TaxonomySearchData {
   taxonomy: {
@@ -194,18 +93,10 @@ interface TaxonomySearchData {
   };
 }
 
-/**
- * Picks a Shopify taxonomy category for a product.
- *
- * The candidate list comes from Shopify's own taxonomy search — the LLM only
- * chooses among real categories, so it cannot invent a category ID that would
- * fail at write time.
- */
-async function generateTaxonomyFix(
+async function searchTaxonomyCandidates(
   admin: AdminGraphQLClient,
   product: ScannedProduct,
-  issue: Issue,
-): Promise<GeneratedFix | null> {
+) {
   const searchTerm = [product.productType, product.title]
     .filter(Boolean)
     .join(" ")
@@ -216,60 +107,19 @@ async function generateTaxonomyFix(
     SEARCH_TAXONOMY_QUERY,
     { search: searchTerm },
   );
-
-  const candidates = data.taxonomy.categories.nodes.filter((c) => !c.isRoot);
-  if (candidates.length === 0) return null;
-
-  const llm = getLLM();
-  const result = await llm.generateJSON<{
-    categoryId: string;
-    rationale: string;
-  }>({
-    schema: TAXONOMY_PICK_SCHEMA as unknown as object,
-    temperature: 0,
-    system:
-      "You classify products into a fixed taxonomy. Answer only with the requested JSON.",
-    prompt: `Product:
-- title: ${product.title}
-- type: ${product.productType ?? "unknown"}
-- description: ${(product.description ?? "").slice(0, 500)}
-
-Candidate categories:
-${candidates.map((c) => `- ${c.id} => ${c.fullName}`).join("\n")}
-
-Return "categoryId": the id of the single best-fitting category, copied verbatim from the list above. Prefer the most specific one that is still clearly correct.
-Also return "rationale": one sentence in English for the merchant.`,
-  });
-
-  const chosen = candidates.find((c) => c.id === result.categoryId);
-  // The model occasionally returns a near-miss id; refuse rather than write a
-  // category that does not exist.
-  if (!chosen) return null;
-
-  const before: TaxonomyPayload = {
-    categoryId: product.categoryId,
-    category: product.category,
-  };
-  const after: TaxonomyPayload = {
-    categoryId: chosen.id,
-    category: chosen.fullName,
-  };
-
-  return {
-    type: "taxonomy",
-    issueCode: issue.code,
-    rationale: result.rationale,
-    before,
-    after,
-  };
+  return data.taxonomy.categories.nodes.filter((c) => !c.isRoot);
 }
 
 /**
- * Generates every fix Refera can offer for one product.
+ * Generates every fix Refera can offer for one product, in a single LLM call.
  *
- * Issues that are not fixable by copy generation (missing images, missing alt
- * text, missing vendor) are reported by the scanner but produce no Fix rows —
- * suggesting a photograph is outside what this app can honestly deliver.
+ * Consolidated on purpose: the earlier shape (one call per issue) made a
+ * 20-product fix phase cost ~60 calls, which both burns money and turns
+ * rate-limit hiccups into multi-hour scans. One call per product returns the
+ * description, the metafields and the taxonomy pick together.
+ *
+ * Issues that cannot be fixed by generated copy (missing images, alt text,
+ * vendor) are reported by the scanner but produce no Fix rows.
  */
 export async function generateFixesForProduct(
   admin: AdminGraphQLClient,
@@ -277,39 +127,233 @@ export async function generateFixesForProduct(
   store: StoreContext,
   issues: Issue[],
 ): Promise<GeneratedFix[]> {
+  const wantsDescription = issues.some(
+    (i) => i.code === "MISSING_DESCRIPTION" || i.code === "SHORT_DESCRIPTION",
+  );
+  const wantsMetafields = issues.some((i) => i.code === "FEW_METAFIELDS");
+  const wantsCategory = issues.some((i) => i.code === "MISSING_CATEGORY");
+
+  if (!wantsDescription && !wantsMetafields && !wantsCategory) return [];
+
+  let taxonomyCandidates: Awaited<ReturnType<typeof searchTaxonomyCandidates>> = [];
+  if (wantsCategory) {
+    try {
+      taxonomyCandidates = await searchTaxonomyCandidates(admin, product);
+    } catch (error) {
+      // Taxonomy search failing (expired token, throttling) should not block
+      // the description/metafield fixes for this product.
+      console.error(
+        `[fixer] taxonomy search for ${product.title}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  const tasks: string[] = [];
+  if (wantsDescription) {
+    tasks.push(
+      `1. "descriptionHtml": a replacement description as simple HTML (<p>, <ul>, <li>, <strong> only), 200-400 words, in ${store.language ?? "en-US"}. State plainly what the product is, who it is for, and the concrete use case. Include only attributes you can infer from the data given — invent nothing. Write so an AI assistant answering "best <category> for <use case>" could quote it. Also fill "descriptionRationale" (one sentence, English, for the merchant).`,
+    );
+  }
+  if (wantsMetafields) {
+    tasks.push(
+      `2. "metafields": 3-5 structured attributes that help an AI assistant match this product to a specific question. Keys: snake_case English, generic across the category (e.g. "material", "use_case", "target_audience"). Values: plain text under 200 chars, in ${store.language ?? "en-US"}. Do not duplicate existing metafield keys. Only state what the data supports. Also fill "metafieldsRationale" (one sentence, English).`,
+    );
+  }
+  if (wantsCategory && taxonomyCandidates.length > 0) {
+    tasks.push(
+      `3. "categoryId": the single best-fitting category id, copied VERBATIM from this list (prefer the most specific clearly-correct one):\n${taxonomyCandidates
+        .map((c) => `- ${c.id} => ${c.fullName}`)
+        .join("\n")}\nAlso fill "categoryRationale" (one sentence, English).`,
+    );
+  }
+
+  // The category task drops out when taxonomy search found nothing; if that
+  // was the only want, there is nothing left to ask — an LLM call with an
+  // empty task list can only return garbage.
+  if (tasks.length === 0) return [];
+
+  const llm = getLLM();
+  const response = await llm.generateJSON<ProductFixesResponse>({
+    schema: PRODUCT_FIXES_SCHEMA as unknown as object,
+    temperature: 0.5,
+    timeoutMs: FIX_TIMEOUT_MS,
+    system:
+      "You improve e-commerce product data for AI shopping visibility. Answer only with the requested JSON. For any part not requested below, return an empty string or empty array.",
+    prompt: `Store sells: ${store.niche ?? "unknown"}
+
+Product:
+- title: ${product.title}
+- type: ${product.productType ?? "unknown"}
+- vendor: ${product.vendor ?? "unknown"}
+- tags: ${product.tags.join(", ") || "none"}
+- current description: ${(product.description ?? "(empty)").slice(0, 1500)}
+- existing metafields: ${
+      product.metafields.map((m) => `${m.namespace}.${m.key}`).join(", ") || "none"
+    }
+
+Tasks:
+${tasks.join("\n\n")}`,
+  });
+
   const fixes: GeneratedFix[] = [];
 
-  for (const issue of issues) {
-    if (!issue.fixable) continue;
+  // Non-strict structured output means the schema is guidance, not a
+  // guarantee — coerce every field before touching it so one omitted key
+  // cannot throw away the fixes that were generated.
+  const descriptionHtml =
+    typeof response.descriptionHtml === "string" ? response.descriptionHtml : "";
+  const categoryId =
+    typeof response.categoryId === "string" ? response.categoryId.trim() : "";
+  const metafieldItems = Array.isArray(response.metafields)
+    ? response.metafields.filter(
+        (mf): mf is { key: string; value: string } =>
+          typeof mf?.key === "string" && typeof mf?.value === "string",
+      )
+    : [];
 
-    try {
-      switch (issue.code) {
-        case "MISSING_DESCRIPTION":
-        case "SHORT_DESCRIPTION":
-          fixes.push(await generateDescriptionFix(product, store, issue));
-          break;
-        case "FEW_METAFIELDS":
-          fixes.push(...(await generateMetafieldFixes(product, store, issue)));
-          break;
-        case "MISSING_CATEGORY": {
-          const fix = await generateTaxonomyFix(admin, product, issue);
-          if (fix) fixes.push(fix);
-          break;
-        }
-        default:
-          // MISSING_SEO_DESCRIPTION is flagged but not auto-fixed in the MVP:
-          // it needs the final description as input, which may itself be
-          // pending approval.
-          break;
-      }
-    } catch {
-      // A single failed generation should not abort the product. The issue
-      // stays visible in the diagnosis with no fix attached.
-      continue;
+  if (wantsDescription && descriptionHtml.trim()) {
+    const before: DescriptionPayload = {
+      descriptionHtml: product.descriptionHtml ?? "",
+    };
+    const after: DescriptionPayload = {
+      descriptionHtml,
+    };
+    fixes.push({
+      type: "description",
+      issueCode: product.description ? "SHORT_DESCRIPTION" : "MISSING_DESCRIPTION",
+      rationale: response.descriptionRationale || "Richer copy for AI assistants to read.",
+      before,
+      after,
+    });
+  }
+
+  if (wantsMetafields) {
+    // Grows as fixes are accepted, so the model repeating a key within one
+    // response cannot produce two Fix rows targeting the same refera.<key>.
+    const existingKeys = new Set(product.metafields.map((m) => m.key));
+    for (const mf of metafieldItems) {
+      if (!mf.key.trim() || !mf.value.trim() || existingKeys.has(mf.key)) continue;
+      existingKeys.add(mf.key);
+      const before: MetafieldPayload = {
+        namespace: REFERA_METAFIELD_NAMESPACE,
+        key: mf.key,
+        type: "single_line_text_field",
+        value: "",
+      };
+      const after: MetafieldPayload = { ...before, value: mf.value };
+      fixes.push({
+        type: "metafield",
+        issueCode: "FEW_METAFIELDS",
+        rationale:
+          response.metafieldsRationale || "Structured attributes make the product answerable.",
+        before,
+        after,
+      });
+    }
+  }
+
+  if (wantsCategory && categoryId) {
+    // Refuse near-miss ids rather than writing a category that does not exist.
+    const chosen = taxonomyCandidates.find((c) => c.id === categoryId);
+    if (chosen) {
+      const before: TaxonomyPayload = {
+        categoryId: product.categoryId,
+        category: product.category,
+      };
+      const after: TaxonomyPayload = {
+        categoryId: chosen.id,
+        category: chosen.fullName,
+      };
+      fixes.push({
+        type: "taxonomy",
+        issueCode: "MISSING_CATEGORY",
+        rationale:
+          response.categoryRationale || "A taxonomy category tells AI systems what this is.",
+        before,
+        after,
+      });
     }
   }
 
   return fixes;
+}
+
+// ---------------------------------------------------------------------------
+// Persistence
+// ---------------------------------------------------------------------------
+
+export interface SnapshotForFixes {
+  id: string;
+  product: ScannedProduct;
+  issues: Issue[];
+}
+
+/**
+ * Generates fixes for one snapshot and records them, moving the snapshot's
+ * fixStatus through queued -> done/failed/skipped.
+ *
+ * Shared by the scan (eager, worst products first) and the on-demand path
+ * (merchant asks for a product beyond the eager cap), so both produce
+ * identical rows.
+ */
+export async function generateAndStoreFixes(
+  admin: AdminGraphQLClient,
+  snapshot: SnapshotForFixes,
+  store: StoreContext,
+): Promise<number> {
+  if (!snapshot.issues.some((i) => i.fixable)) {
+    await prisma.productSnapshot.update({
+      where: { id: snapshot.id },
+      data: { fixStatus: "skipped", fixesVersion: FIX_PROMPT_VERSION },
+    });
+    return 0;
+  }
+
+  await prisma.productSnapshot.update({
+    where: { id: snapshot.id },
+    data: { fixStatus: "queued" },
+  });
+
+  let fixes: GeneratedFix[];
+  try {
+    fixes = await generateFixesForProduct(admin, snapshot.product, store, snapshot.issues);
+  } catch (error) {
+    console.error(
+      `[fixer] ${snapshot.product.title}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+    await prisma.productSnapshot.update({
+      where: { id: snapshot.id },
+      data: { fixStatus: "failed" },
+    });
+    return 0;
+  }
+
+  await prisma.$transaction([
+    ...(fixes.length > 0
+      ? [
+          prisma.fix.createMany({
+            data: fixes.map((fix) => ({
+              productSnapshotId: snapshot.id,
+              type: fix.type,
+              issueCode: fix.issueCode,
+              rationale: fix.rationale,
+              before: fix.before as unknown as object,
+              after: fix.after as unknown as object,
+            })),
+          }),
+        ]
+      : []),
+    prisma.productSnapshot.update({
+      where: { id: snapshot.id },
+      data: { fixStatus: "done", fixesVersion: FIX_PROMPT_VERSION },
+    }),
+  ]);
+
+  return fixes.length;
 }
 
 // ---------------------------------------------------------------------------

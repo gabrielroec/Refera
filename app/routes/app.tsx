@@ -18,7 +18,24 @@ export default function App() {
   return (
     <AppProvider embedded apiKey={apiKey}>
       <s-app-nav>
-        <s-link href="/app">Dashboard</s-link>
+        {/*
+          rel="home" designates the landing route AND hides this link: the app
+          name in the sidebar already navigates here, and a visible duplicate
+          home entry is a documented Built for Shopify rejection reason.
+          The Polaris typings omit `rel`, but App Bridge's SAppNavLinkAttributes
+          defines it — hence the spread.
+        */}
+        <s-link href="/app" {...{ rel: "home" }}>
+          Overview
+        </s-link>
+        {/*
+          Fixed sections only. Listing each issue type here was tried and
+          reverted: those entries change between scans, so the sidebar would
+          rearrange itself under the merchant, and it cost a query on every
+          navigation. Drilling into an issue is the job of the Issues screen.
+        */}
+        <s-link href="/app/issues">Issues</s-link>
+        <s-link href="/app/answers">AI answers</s-link>
       </s-app-nav>
       <Outlet />
     </AppProvider>

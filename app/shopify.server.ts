@@ -16,9 +16,10 @@ const shopify = shopifyApp({
   authPathPrefix: "/auth",
   sessionStorage: new PrismaSessionStorage(prisma),
   distribution: AppDistribution.AppStore,
-  future: {
-    expiringOfflineAccessTokens: true,
-  },
+  // No expiring offline tokens: the scan runs for many minutes inside a
+  // Trigger.dev worker using the stored offline session, and a 2-hour token
+  // dies mid-scan with a 401 the worker cannot refresh. Permanent offline
+  // tokens are the standard for apps with background jobs.
   ...(process.env.SHOP_CUSTOM_DOMAIN
     ? { customShopDomains: [process.env.SHOP_CUSTOM_DOMAIN] }
     : {}),

@@ -44,16 +44,23 @@ model Session {
 // Domain
 // ---------------------------------------------------------------------------
 
-enum Plan {
-  free
-  pro
-}
-
 enum ScanStatus {
   queued
   running
   done
   failed
+}
+
+/// Where a running scan currently is. Drives the progress UI, which would
+/// otherwise have to guess the phase from row counts.
+enum ScanPhase {
+  queued
+  catalogue
+  analysing
+  questions
+  simulating
+  fixing
+  finished
 }
 
 enum FixType {
@@ -75,7 +82,33 @@ model Shop {
   /// myshopify domain, e.g. "refera-phbopjeb.myshopify.com"
   domain String @unique
 
-  plan Plan @default(free)
+  /// Shopify's plan handle — the wire identity of whatever the merchant
+  /// subscribed to, and the only thing entitlement is keyed on.
+  ///
+  /// A plain string, not an enum, on purpose: the value is owned by the Partner
+  /// Dashboard, so a tier added there must not require a migration here, and a
+  /// handle we do not recognise has to degrade to `free` rather than crash.
+  /// `entitlementsFor()` in app/lib/entitlements.ts does that narrowing.
+  planHandle String @default("free")
+
+  /// Status as Shopify last reported it: ACTIVE, PENDING, FROZEN, CANCELLED.
+  /// Null before the first reconcile.
+  planStatus String?
+
+  /// End of the period already paid for.
+  ///
+  /// Persisted rather than queried, because the subscription disappears from
+  /// Shopify's side the moment it ends — after that this row is the only record
+  /// that the merchant is still owed the access they bought.
+  planCycleEnd DateTime?
+
+  /// When the plan was last confirmed against Shopify. A stale value means
+  /// "re-verify", never "not paying" — a transient API failure must not read as
+  /// a cancelled subscription.
+  planVerifiedAt DateTime?
+
+  /// gid://shopify/AppSubscription/… behind the current planHandle.
+  subscriptionGid String?
 
   /// Niche inferred from the catalogue during the first scan,
   /// e.g. "running shoes and athletic apparel". Drives question generation.
@@ -86,10 +119,60 @@ model Shop {
   /// Primary locale, e.g. "pt-BR". Simulated questions are written in this language.
   primaryLocale String?
 
-  scans Scan[]
+  /// When the product mirror was last rebuilt from the Admin API. Webhooks keep
+  /// it fresh in between; a stale value forces a full resync on the next scan.
+  catalogSyncedAt DateTime?
+
+  /// Buyer-intent questions pinned to this store, so consecutive scans measure
+  /// the same thing and the score is comparable over time.
+  simulationQuestions  Json?
+  /// Hash of the store context the questions were written for (niche,
+  /// language, currency); a change invalidates them.
+  storeContextHash     String?
+  questionsGeneratedAt DateTime?
+
+  scans    Scan[]
+  products ProductMirror[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+/// Always-fresh local copy of one product, maintained by product webhooks.
+///
+/// Lets a scan read its catalogue from Postgres instead of paginating the
+/// Admin API, and lets content hashing decide which products actually changed.
+model ProductMirror {
+  id     String @id @default(cuid())
+  shopId String
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  /// Shopify GID, e.g. "gid://shopify/Product/123".
+  productId String
+  status    String @default("ACTIVE")
+  /// Full ScannedProduct shape, exactly what the pipeline reads.
+  data      Json
+  /// SHA-256 of the monitored fields; equal hash == nothing to re-analyse.
+  contentHash String
+  /// Shopify's own updatedAt, for newest-first ordering without a round trip.
+  shopifyUpdatedAt DateTime?
+
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+
+  @@unique([shopId, productId])
+  @@index([shopId, status, shopifyUpdatedAt])
+}
+
+enum FixGenerationStatus {
+  /// Eligible, not generated yet — the merchant can request it on demand.
+  pending
+  /// A generation job is in flight.
+  queued
+  done
+  failed
+  /// Nothing fixable on this product.
+  skipped
 }
 
 /// A single end-to-end run: catalogue scan + AI simulations + score.
@@ -98,6 +181,7 @@ model Scan {
   shopId String
   shop   Shop       @relation(fields: [shopId], references: [id], onDelete: Cascade)
   status ScanStatus @default(queued)
+  phase  ScanPhase  @default(queued)
 
   /// AI-readiness score, 0-100. Null until the scan reaches `done`.
   score Int?
@@ -109,6 +193,17 @@ model Scan {
 
   /// Trigger.dev run id, for log lookups from the UI.
   jobRunId String?
+
+  /// The plan this scan was authorised under, and the quota it was granted —
+  /// both frozen when the scan was enqueued.
+  ///
+  /// Background jobs cannot ask Shopify what the plan is: the unauthenticated
+  /// admin context Trigger.dev tasks run under has no billing surface at all.
+  /// Reading the plan mid-run would be worse anyway — the catalogue is read at
+  /// the start and the questions minutes later, so a change in between yields a
+  /// scan that spent one tier's product budget and another tier's questions.
+  planHandle String?
+  quota      Json?
 
   /// Denormalised counters so the dashboard renders without aggregates.
   productsScanned Int @default(0)
@@ -145,18 +240,32 @@ model ProductSnapshot {
   tags        String[] @default([])
   imageCount  Int      @default(0)
   hasAltText  Boolean  @default(false)
+  /// Thumbnail of the first image, shown beside suggestions.
+  imageUrl    String?
 
   /// [{ namespace, key, type, value }]
   metafields Json @default("[]")
   /// [{ code, severity, message, field }]
   issues     Json @default("[]")
 
+  /// Hash of the product data this snapshot (and its fixes) were computed from.
+  contentHash String?
+  /// Set when fixes were inherited from an earlier scan of identical content
+  /// instead of being regenerated. Points at the source snapshot.
+  carriedFromId String?
+  fixStatus     FixGenerationStatus @default(pending)
+  /// Version of the fix prompts the fixes were generated with; a bump makes
+  /// earlier fixes ineligible for carry-forward.
+  fixesVersion  Int?
+
   fixes Fix[]
 
   createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
 
   @@unique([scanId, productId])
   @@index([scanId])
+  @@index([productId, contentHash])
 }
 
 /// One buyer-intent question, executed N times against an LLM.

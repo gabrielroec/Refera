@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import type {
   ActionFunctionArgs,
   HeadersFunction,
   LoaderFunctionArgs,
 } from "react-router";
-import { useFetcher, useLoaderData, useRevalidator } from "react-router";
+import { Link, useFetcher, useLoaderData, useRevalidator, useRouteError } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { tasks } from "@trigger.dev/sdk";
@@ -12,15 +12,12 @@ import { tasks } from "@trigger.dev/sdk";
 import prisma from "../db.server";
 import { authenticate } from "../shopify.server";
 import { ensureShop, getPlanState } from "../services/billing.server";
-import { applyFix } from "../services/fixer.server";
+import { loadLatestScanState, loadOverview } from "../services/dashboard.server";
+import { rescueStuckFixGenerations } from "../services/scan-state.server";
+import { AiScaleCard } from "../components/ai-scale-card";
+import { ScoreBar, ScoreDial, scoreVerdict } from "../components/score";
 import type { scanTask } from "../../trigger/scan";
-import type {
-  DescriptionPayload,
-  Issue,
-  MetafieldPayload,
-  ScoreBreakdown,
-  TaxonomyPayload,
-} from "../types";
+import type { loader as progressLoader } from "./app.progress";
 
 // ---------------------------------------------------------------------------
 // Loader
@@ -29,23 +26,15 @@ import type {
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const shop = await ensureShop(session.shop);
-  const plan = await getPlanState(shop.id);
 
-  const scan = await prisma.scan.findFirst({
-    where: { shopId: shop.id },
-    orderBy: { createdAt: "desc" },
-    include: {
-      simulations: { orderBy: { createdAt: "asc" } },
-      products: {
-        orderBy: { createdAt: "asc" },
-        include: {
-          fixes: { orderBy: { createdAt: "asc" } },
-        },
-      },
-    },
-  });
+  const [plan, latest, overview] = await Promise.all([
+    getPlanState(shop.id),
+    loadLatestScanState(shop.id),
+    loadOverview(shop.id),
+    rescueStuckFixGenerations(shop.id),
+  ]);
 
-  return { shopDomain: session.shop, plan, scan };
+  return { plan, latest, overview };
 };
 
 // ---------------------------------------------------------------------------
@@ -53,279 +42,329 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 // ---------------------------------------------------------------------------
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { session, admin } = await authenticate.admin(request);
+  const { session } = await authenticate.admin(request);
   const shop = await ensureShop(session.shop);
   const form = await request.formData();
-  const intent = form.get("intent");
 
-  if (intent === "run-scan") {
-    const plan = await getPlanState(shop.id);
-    if (!plan.canRunScan) {
-      return {
-        ok: false as const,
-        error: plan.scanInProgress
-          ? "A scan is already in progress."
-          : "The free plan includes one scan. Upgrade to Pro to re-scan.",
-      };
-    }
-
-    const scan = await prisma.scan.create({
-      data: { shopId: shop.id, status: "queued" },
-    });
-
-    try {
-      const handle = await tasks.trigger<typeof scanTask>("scan", {
-        scanId: scan.id,
-        shopDomain: session.shop,
-      });
-      await prisma.scan.update({
-        where: { id: scan.id },
-        data: { jobRunId: handle.id },
-      });
-    } catch (error) {
-      // Most likely TRIGGER_SECRET_KEY missing or the queue being down. Mark
-      // the scan failed so the free-scan credit is not consumed.
-      await prisma.scan.update({
-        where: { id: scan.id },
-        data: {
-          status: "failed",
-          error: `Could not enqueue the scan job: ${String(error)}`,
-        },
-      });
-      return {
-        ok: false as const,
-        error: "Could not start the scan. Check the job queue configuration.",
-      };
-    }
-
-    return { ok: true as const };
+  if (form.get("intent") !== "run-scan") {
+    return { ok: false as const, error: "Unknown action." };
   }
 
-  if (intent === "reject-fix") {
-    const fixId = String(form.get("fixId") ?? "");
-    // Guard the shop boundary: a fix can only be rejected by the shop it
-    // belongs to.
-    const fix = await prisma.fix.findFirst({
-      where: {
-        id: fixId,
-        productSnapshot: { scan: { shopId: shop.id } },
-        status: "suggested",
+  const plan = await getPlanState(shop.id);
+  if (!plan.canRunScan) {
+    return {
+      ok: false as const,
+      error:
+        plan.blockedReason === "in-progress"
+          ? "A scan is already running."
+          : plan.blockedReason === "monthly-limit"
+            ? `You have used all ${plan.entitlements.scans.limit} scans on your plan this month.`
+            : "The free plan includes one scan. Choose a plan to scan again.",
+    };
+  }
+
+  const scan = await prisma.scan.create({
+    data: { shopId: shop.id, status: "queued" },
+  });
+
+  try {
+    const handle = await tasks.trigger<typeof scanTask>("scan", {
+      scanId: scan.id,
+      shopDomain: session.shop,
+    });
+    await prisma.scan.update({
+      where: { id: scan.id },
+      data: { jobRunId: handle.id },
+    });
+  } catch (error) {
+    // Most likely the queue is unreachable. Mark it failed so the free scan
+    // credit is not consumed by an attempt that never ran.
+    await prisma.scan.update({
+      where: { id: scan.id },
+      data: {
+        status: "failed",
+        phase: "finished",
+        error: `Could not enqueue the scan job: ${String(error)}`,
       },
     });
-    if (!fix) return { ok: false as const, error: "Fix not found." };
-
-    await prisma.fix.update({
-      where: { id: fix.id },
-      data: { status: "rejected" },
-    });
-    return { ok: true as const };
+    return {
+      ok: false as const,
+      error: "Could not start the scan. Check that the job queue is running.",
+    };
   }
 
-  if (intent === "apply-fix") {
-    const plan = await getPlanState(shop.id);
-    if (!plan.canApplyFixes) {
-      return {
-        ok: false as const,
-        error: "Applying fixes is a Pro feature.",
-      };
-    }
-
-    const fixId = String(form.get("fixId") ?? "");
-    const fix = await prisma.fix.findFirst({
-      where: {
-        id: fixId,
-        productSnapshot: { scan: { shopId: shop.id } },
-        status: "suggested",
-      },
-      include: { productSnapshot: { select: { productId: true } } },
-    });
-    if (!fix) return { ok: false as const, error: "Fix not found." };
-
-    // Explicit merchant approval is this click; record it before writing.
-    await prisma.fix.update({
-      where: { id: fix.id },
-      data: { status: "approved" },
-    });
-
-    const result = await applyFix(
-      admin,
-      fix.productSnapshot.productId,
-      fix.type,
-      fix.after,
-    );
-
-    await prisma.fix.update({
-      where: { id: fix.id },
-      data: result.ok
-        ? { status: "applied", appliedAt: new Date(), error: null }
-        : { status: "approved", error: result.error },
-    });
-
-    return result.ok
-      ? { ok: true as const }
-      : { ok: false as const, error: `Shopify rejected the change: ${result.error}` };
-  }
-
-  return { ok: false as const, error: "Unknown intent." };
-};
-
-// ---------------------------------------------------------------------------
-// Types shared with the component (loader serialisation shape)
-// ---------------------------------------------------------------------------
-
-type LoaderData = Awaited<ReturnType<typeof loader>>;
-type ScanData = NonNullable<LoaderData["scan"]>;
-type FixRow = ScanData["products"][number]["fixes"][number];
-type ProductRow = ScanData["products"][number];
-
-// ---------------------------------------------------------------------------
-// Score dial (Polaris has no gauge; small inline SVG)
-// ---------------------------------------------------------------------------
-
-function scoreColor(score: number): string {
-  if (score < 40) return "#d82c0d";
-  if (score < 70) return "#b98900";
-  return "#29845a";
-}
-
-function ScoreDial({ score }: { score: number }) {
-  const radius = 64;
-  const circumference = 2 * Math.PI * radius;
-  const filled = (score / 100) * circumference;
-
-  return (
-    <svg width="160" height="160" viewBox="0 0 160 160" role="img" aria-label={`AI readiness score: ${score} out of 100`}>
-      <circle cx="80" cy="80" r={radius} fill="none" stroke="#e3e3e3" strokeWidth="12" />
-      <circle
-        cx="80"
-        cy="80"
-        r={radius}
-        fill="none"
-        stroke={scoreColor(score)}
-        strokeWidth="12"
-        strokeLinecap="round"
-        strokeDasharray={`${filled} ${circumference - filled}`}
-        transform="rotate(-90 80 80)"
-      />
-      <text x="80" y="76" textAnchor="middle" fontSize="36" fontWeight="700" fill="currentColor">
-        {score}
-      </text>
-      <text x="80" y="100" textAnchor="middle" fontSize="12" fill="#616161">
-        / 100
-      </text>
-    </svg>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Fix diff rendering
-// ---------------------------------------------------------------------------
-
-/** Plain-text view of a payload; HTML is shown as text, never injected. */
-function payloadText(type: FixRow["type"], payload: unknown): string {
-  if (type === "description") {
-    const p = payload as DescriptionPayload;
-    return p.descriptionHtml
-      ? p.descriptionHtml.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()
-      : "(empty)";
-  }
-  if (type === "metafield") {
-    const p = payload as MetafieldPayload;
-    return p.value ? `${p.namespace}.${p.key} = ${p.value}` : "(not set)";
-  }
-  const p = payload as TaxonomyPayload;
-  return p.category ?? "(no category)";
-}
-
-const FIX_TYPE_LABEL: Record<FixRow["type"], string> = {
-  description: "Description",
-  metafield: "Metafield",
-  taxonomy: "Category",
+  // The id lets the client follow this specific scan: the progress feed may
+  // still be reporting the previous one for a moment.
+  return { ok: true as const, startedScanId: scan.id };
 };
 
 // ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
 
-export default function Dashboard() {
-  const { plan, scan } = useLoaderData<typeof loader>();
+type ProgressData = Awaited<ReturnType<typeof progressLoader>>;
+type ProgressScan = NonNullable<ProgressData["scan"]>;
+
+/**
+ * The overview.
+ *
+ * Everything that used to live here — a 213-row fix table, a 39-row product
+ * table printing 158 inline messages, a full simulations table — moved behind
+ * /app/issues. What stays is the score, the three issue types worth the most
+ * points, and the counts that lead into them.
+ */
+export default function Overview() {
+  const { plan, latest, overview } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
+  const progress = useFetcher<typeof progressLoader>();
   const revalidator = useRevalidator();
   const shopify = useAppBridge();
 
-  const [selectedFix, setSelectedFix] = useState<{
-    fix: FixRow;
-    product: ProductRow;
-  } | null>(null);
-  const modalRef = useRef<HTMLElement & { showOverlay: () => void; hideOverlay: () => void }>(null);
+  const live = progress.data?.scan ?? null;
 
-  const running = scan?.status === "queued" || scan?.status === "running";
+  const startedScanId =
+    fetcher.data && "startedScanId" in fetcher.data ? fetcher.data.startedScanId : null;
 
-  // Progress polling: revalidate every 4s while a scan is in flight.
+  const feedBusy =
+    live !== null &&
+    (live.status === "queued" || live.status === "running" || live.generatingCount > 0);
+  // The feed can still describe the previous scan right after the action
+  // returns; until it catches up we are knowingly waiting, not idle.
+  const awaitingFeed = startedScanId !== null && live?.id !== startedScanId;
+  const loaderBusy = latest?.status === "queued" || latest?.status === "running";
+  const polling = feedBusy || awaitingFeed || loaderBusy;
+
+  // The fetcher identity changes every render, so an effect depending on it
+  // would rebuild the interval before it ever fires.
+  const progressRef = useRef(progress);
   useEffect(() => {
-    if (!running) return;
-    const timer = setInterval(() => revalidator.revalidate(), 4000);
+    progressRef.current = progress;
+  });
+
+  useEffect(() => {
+    if (!polling) return;
+    const tick = () => {
+      if (progressRef.current.state === "idle") {
+        progressRef.current.load("/app/progress");
+      }
+    };
+    tick();
+    const timer = setInterval(tick, 2000);
     return () => clearInterval(timer);
-  }, [running, revalidator]);
+  }, [polling]);
 
-  // Surface action results as toasts.
+  const lastSettled = useRef<string | null>(null);
   useEffect(() => {
-    if (!fetcher.data) return;
-    if (fetcher.data.ok) {
-      shopify.toast.show("Done");
-    } else {
-      shopify.toast.show(fetcher.data.error, { isError: true });
-    }
+    if (!startedScanId) return;
+    lastSettled.current = null;
+    progressRef.current.load("/app/progress");
+  }, [startedScanId]);
+
+  // When the feed reports the work is over, pull the real data once.
+  useEffect(() => {
+    if (!live) return;
+    const finished =
+      (live.status === "done" || live.status === "failed") && live.generatingCount === 0;
+    if (!finished) return;
+    if (startedScanId !== null && live.id !== startedScanId) return;
+
+    const key = `${live.id}:${live.status}`;
+    if (lastSettled.current === key) return;
+    lastSettled.current = key;
+    revalidator.revalidate();
+  }, [live, startedScanId, revalidator]);
+
+  useEffect(() => {
+    if (!fetcher.data || fetcher.data.ok) return;
+    shopify.toast.show(fetcher.data.error, { isError: true });
   }, [fetcher.data, shopify]);
-
-  // Close the modal after a fix action completes. The revalidated loader data
-  // removes the fix from the list; clearing the selection happens on the
-  // modal's own hide callback (see FixModal onHide).
-  useEffect(() => {
-    if (fetcher.state === "idle" && fetcher.data?.ok && selectedFix) {
-      modalRef.current?.hideOverlay();
-    }
-  }, [fetcher.state, fetcher.data, selectedFix]);
 
   const busy = fetcher.state !== "idle";
   const runScan = () => fetcher.submit({ intent: "run-scan" }, { method: "POST" });
-
-  const openFix = (fix: FixRow, product: ProductRow) => {
-    setSelectedFix({ fix, product });
-    // Defer until the modal content re-renders.
-    requestAnimationFrame(() => modalRef.current?.showOverlay());
-  };
+  const scan = overview.scan;
 
   return (
-    <s-page heading="Refera — AI Visibility">
-      {scan?.status === "done" && (
+    <s-page heading="Refera">
+      {scan && !polling && plan.canRunScan && (
         <s-button
           slot="primary-action"
           onClick={runScan}
-          {...(busy || !plan.canRunScan ? { disabled: true } : {})}
+          {...(busy ? { disabled: true } : {})}
         >
-          {plan.canRunScan ? "Re-scan" : "Re-scan (Pro)"}
+          Scan again
         </s-button>
       )}
 
-      {!scan && <EmptyState onRun={runScan} busy={busy} />}
-      {running && <ProgressState scan={scan} />}
-      {scan?.status === "failed" && (
-        <FailedState error={scan.error} onRetry={runScan} busy={busy} canRun={plan.canRunScan} />
-      )}
-      {scan?.status === "done" && (
-        <Results scan={scan} onOpenFix={openFix} planIsFree={plan.plan === "free"} />
+      <AiScaleCard
+        appearances={overview.appearances}
+        totalRuns={overview.totalRuns}
+      />
+
+      {polling && <ProgressState live={live} />}
+
+      {!polling && latest?.status === "failed" && (
+        <s-section>
+          <s-banner tone="critical" heading="The scan failed">
+            <s-stack direction="block" gap="base">
+              <s-paragraph>{latest.error ?? "Unknown error."}</s-paragraph>
+              {plan.canRunScan && (
+                <s-box>
+                  <s-button onClick={runScan} {...(busy ? { disabled: true } : {})}>
+                    Try again
+                  </s-button>
+                </s-box>
+              )}
+            </s-stack>
+          </s-banner>
+        </s-section>
       )}
 
-      <FixModal
-        modalRef={modalRef}
-        selected={selectedFix}
-        canApply={plan.canApplyFixes}
-        busy={busy}
-        onApply={(fixId) => fetcher.submit({ intent: "apply-fix", fixId }, { method: "POST" })}
-        onReject={(fixId) => fetcher.submit({ intent: "reject-fix", fixId }, { method: "POST" })}
-        onClosed={() => setSelectedFix(null)}
-      />
+      {!scan && !polling && <EmptyState onRun={runScan} busy={busy} />}
+
+      {scan && (
+        <>
+          {polling && (
+            <s-section>
+              <s-banner tone="info" heading="Showing your last results">
+                <s-paragraph>
+                  These are from your previous scan. They will be replaced when
+                  the new one finishes.
+                </s-paragraph>
+              </s-banner>
+            </s-section>
+          )}
+
+          <s-section heading="AI readiness">
+            <s-stack direction="block" gap="base">
+              <s-stack direction="inline" gap="large-200" alignItems="center">
+                <ScoreDial score={scan.score ?? 0} />
+                <s-stack direction="block" gap="small-500">
+                  <s-text type="strong">{scoreVerdict(scan.score ?? 0)}</s-text>
+                  <s-paragraph color="subdued">
+                    Half of this is how complete your product data is — the part
+                    you can move today. The other half is how often your store
+                    actually surfaced in AI answers.
+                  </s-paragraph>
+                  <s-text color="subdued">
+                    {scan.productsScanned} products ·{" "}
+                    {scan.finishedAt
+                      ? new Date(scan.finishedAt).toLocaleDateString("en-US", {
+                          month: "short",
+                          day: "numeric",
+                          hour: "numeric",
+                          minute: "2-digit",
+                        })
+                      : "—"}
+                  </s-text>
+                </s-stack>
+              </s-stack>
+
+              {scan.breakdown && (
+                <s-grid gridTemplateColumns="repeat(auto-fit, minmax(260px, 1fr))" gap="base">
+                  <ScoreBar
+                    label="Catalogue data"
+                    score={scan.breakdown.dataScore}
+                    caption={`Averaged across ${scan.productsScanned} products · ${scan.issuesFound} issues`}
+                  />
+                  <ScoreBar
+                    label="AI visibility"
+                    score={scan.breakdown.visibilityScore}
+                    caption={
+                      overview.appearances > 0
+                        ? `Appeared in ${overview.appearances} of ${overview.totalRuns} answers`
+                        : `Not mentioned in any of the ${overview.totalRuns} answers`
+                    }
+                  />
+                </s-grid>
+              )}
+            </s-stack>
+          </s-section>
+
+          {overview.topIssues.length > 0 && (
+            <s-section heading="Start here">
+              <s-stack direction="block" gap="base">
+                <s-text color="subdued">Ranked by what fixing it is worth</s-text>
+                <s-stack direction="block" gap="none">
+                  {overview.topIssues.map((group) => (
+                    <Link
+                      key={group.code}
+                      to={`/app/issues/${group.slug}`}
+                      style={{ textDecoration: "none", color: "inherit", display: "block" }}
+                    >
+                      <s-box padding="base" borderRadius="base">
+                        <s-stack direction="inline" gap="base" alignItems="center">
+                          <s-badge tone={group.severity === "high" ? "critical" : "warning"}>
+                            +{group.scoreImpact} pts
+                          </s-badge>
+                          <s-stack direction="block" gap="small-500">
+                            <s-text type="strong">
+                              {group.productCount} product
+                              {group.productCount === 1 ? "" : "s"} —{" "}
+                              {group.label.toLowerCase()}
+                            </s-text>
+                            <s-text color="subdued">
+                              {group.readyFixes} fix
+                              {group.readyFixes === 1 ? "" : "es"} ready to review
+                            </s-text>
+                          </s-stack>
+                          <s-text color="subdued">›</s-text>
+                        </s-stack>
+                      </s-box>
+                    </Link>
+                  ))}
+                </s-stack>
+                <s-box>
+                  <s-button href="/app/issues" variant="tertiary">
+                    See all {overview.totalIssueTypes} issue types
+                  </s-button>
+                </s-box>
+              </s-stack>
+            </s-section>
+          )}
+
+          {overview.competitors.length > 0 && (
+            <s-section heading="Who AI recommends instead">
+              <s-stack direction="block" gap="base">
+                <s-text color="subdued">
+                  Across {overview.totalRuns} answers to shopper questions in your
+                  category, these brands were named — yours{" "}
+                  {overview.appearances > 0
+                    ? `${overview.appearances} time${overview.appearances === 1 ? "" : "s"}`
+                    : "never"}
+                  .
+                </s-text>
+                <s-stack direction="inline" gap="small-300">
+                  {overview.competitors.slice(0, 8).map((name) => (
+                    <s-badge key={name}>{name}</s-badge>
+                  ))}
+                  {overview.competitors.length > 8 && (
+                    <s-text color="subdued">
+                      +{overview.competitors.length - 8} more
+                    </s-text>
+                  )}
+                </s-stack>
+              </s-stack>
+            </s-section>
+          )}
+
+          {!plan.canRunScan && !polling && (
+            <s-section>
+              <s-banner tone="info" heading="Scan again with a paid plan">
+                <s-stack direction="block" gap="base">
+                  <s-paragraph>
+                    The free plan includes one scan. A paid plan keeps checking on
+                    a schedule, so you can measure whether your fixes moved the
+                    score.
+                  </s-paragraph>
+                  <s-box>
+                    <s-button href="/app/plans">See plans</s-button>
+                  </s-box>
+                </s-stack>
+              </s-banner>
+            </s-section>
+          )}
+        </>
+      )}
     </s-page>
   );
 }
@@ -339,13 +378,12 @@ function EmptyState({ onRun, busy }: { onRun: () => void; busy: boolean }) {
     <s-section heading="See how AI assistants see your store">
       <s-stack direction="block" gap="base">
         <s-paragraph>
-          Refera scans your catalogue, asks ChatGPT-style shopping questions for
-          your niche, and measures whether your store shows up in the answers —
-          then suggests concrete fixes.
+          Refera reads your catalogue, asks the questions your buyers would ask
+          ChatGPT, and measures whether your store shows up in the answers.
         </s-paragraph>
-        <s-paragraph>
-          The scan reads up to 50 products and takes a few minutes. Nothing is
-          changed in your store without your approval.
+        <s-paragraph color="subdued">
+          The scan reads up to 50 products and takes a couple of minutes.
+          Nothing in your store changes without your approval.
         </s-paragraph>
         <s-box>
           <s-button variant="primary" onClick={onRun} {...(busy ? { disabled: true } : {})}>
@@ -357,381 +395,119 @@ function EmptyState({ onRun, busy }: { onRun: () => void; busy: boolean }) {
   );
 }
 
-function ProgressState({ scan }: { scan: ScanData }) {
-  const steps: Array<[string, boolean]> = [
-    ["Reading your catalogue", scan.productsScanned > 0],
-    ["Detecting issues", scan.issuesFound > 0 || scan.simulations.length > 0],
-    [
-      `Simulating AI shopping questions (${scan.simulations.length}/10)`,
-      scan.simulations.length >= 10,
-    ],
-    ["Scoring and generating fixes", scan.status === "done"],
-  ];
+/** The phases a scan moves through, with their share of the bar. */
+const PHASES = [
+  { key: "catalogue", label: "Reading your catalogue", weight: 15 },
+  { key: "analysing", label: "Checking each product", weight: 10 },
+  { key: "questions", label: "Working out what your buyers ask", weight: 10 },
+  { key: "simulating", label: "Asking AI assistants those questions", weight: 45 },
+  { key: "fixing", label: "Writing fixes", weight: 20 },
+] as const;
+
+/**
+ * Live progress, driven by the lightweight progress feed.
+ *
+ * Phase-weighted rather than guessed from row counts: the scan reports where
+ * it is, and the simulation phase — by far the longest — fills in as answers
+ * come back.
+ */
+function ProgressState({ live }: { live: ProgressScan | null }) {
+  const phase = live?.phase ?? "queued";
+  const sims = live?.simulationCount ?? 0;
+  const fixes = live?.fixCount ?? 0;
+
+  const currentIndex = PHASES.findIndex((p) => p.key === phase);
+  let percent = 0;
+  PHASES.forEach((p, index) => {
+    if (currentIndex < 0) return;
+    if (index < currentIndex) {
+      percent += p.weight;
+    } else if (index === currentIndex) {
+      const fraction =
+        p.key === "simulating"
+          ? Math.min(1, sims / 10)
+          : p.key === "fixing"
+            ? Math.min(1, fixes / 20)
+            : 0.5;
+      percent += p.weight * fraction;
+    }
+  });
+  percent = Math.max(2, Math.min(99, Math.round(percent)));
+
+  const heading =
+    phase === "queued"
+      ? "Starting your scan…"
+      : (PHASES.find((p) => p.key === phase)?.label ?? "Finishing up…");
+
+  const detail =
+    phase === "simulating"
+      ? `${sims} of 10 questions answered`
+      : phase === "fixing"
+        ? `${fixes} fixes written so far`
+        : live && live.productsScanned > 0
+          ? `${live.productsScanned} products read`
+          : null;
 
   return (
-    <s-section heading="Scanning your store…">
+    <s-section heading="Scanning your store">
       <s-stack direction="block" gap="base">
-        <s-stack direction="inline" gap="small">
+        <s-stack direction="inline" gap="small" alignItems="center">
           <s-spinner accessibilityLabel="Scan in progress" />
-          <s-text>
-            This takes a few minutes. You can leave this page — the scan keeps
-            running.
-          </s-text>
+          <s-text type="strong">{heading}</s-text>
         </s-stack>
+
+        <div
+          role="progressbar"
+          aria-valuenow={percent}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          style={{
+            height: 6,
+            borderRadius: 3,
+            background: "var(--s-color-border, #e3e3e3)",
+            overflow: "hidden",
+          }}
+        >
+          <div
+            style={{
+              width: `${percent}%`,
+              height: "100%",
+              borderRadius: 3,
+              background: "var(--s-color-text, #303030)",
+              transition: "width 0.8s ease",
+            }}
+          />
+        </div>
+
+        <s-text color="subdued">
+          {percent}%{detail ? ` · ${detail}` : ""}
+        </s-text>
+
         <s-unordered-list>
-          {steps.map(([label, done]) => (
-            <s-list-item key={label}>
-              {done ? "✓ " : "· "}
-              {label}
+          {PHASES.map((p, index) => (
+            <s-list-item key={p.key}>
+              <s-text color={currentIndex >= index ? undefined : "subdued"}>
+                {currentIndex > index ? "✓ " : currentIndex === index ? "→ " : "· "}
+                {p.label}
+              </s-text>
             </s-list-item>
           ))}
         </s-unordered-list>
+
+        <s-text color="subdued">
+          You can leave this page — the scan keeps running.
+        </s-text>
       </s-stack>
     </s-section>
-  );
-}
-
-function FailedState({
-  error,
-  onRetry,
-  busy,
-  canRun,
-}: {
-  error: string | null;
-  onRetry: () => void;
-  busy: boolean;
-  canRun: boolean;
-}) {
-  return (
-    <s-section>
-      <s-banner tone="critical" heading="The scan failed">
-        <s-stack direction="block" gap="base">
-          <s-paragraph>{error ?? "Unknown error."}</s-paragraph>
-          {canRun && (
-            <s-box>
-              <s-button onClick={onRetry} {...(busy ? { disabled: true } : {})}>
-                Try again
-              </s-button>
-            </s-box>
-          )}
-        </s-stack>
-      </s-banner>
-    </s-section>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Results
-// ---------------------------------------------------------------------------
-
-function Results({
-  scan,
-  onOpenFix,
-  planIsFree,
-}: {
-  scan: ScanData;
-  onOpenFix: (fix: FixRow, product: ProductRow) => void;
-  planIsFree: boolean;
-}) {
-  const breakdown = scan.scoreBreakdown as unknown as ScoreBreakdown | null;
-
-  const totalRuns = scan.simulations.reduce((sum, s) => sum + s.runCount, 0);
-  const appearances = scan.simulations.reduce((sum, s) => sum + s.appearanceCount, 0);
-
-  const suggestedFixes = useMemo(
-    () =>
-      scan.products.flatMap((product) =>
-        product.fixes
-          .filter((fix) => fix.status === "suggested" || fix.status === "approved")
-          .map((fix) => ({ fix, product })),
-      ),
-    [scan.products],
-  );
-  const appliedCount = scan.products.reduce(
-    (sum, product) => sum + product.fixes.filter((f) => f.status === "applied").length,
-    0,
-  );
-
-  return (
-    <>
-      <s-section heading="AI readiness">
-        <s-stack direction="inline" gap="large-200" alignItems="center">
-          <ScoreDial score={scan.score ?? 0} />
-          <s-stack direction="block" gap="small">
-            {breakdown && (
-              <>
-                <s-text>
-                  Catalogue data: <s-text type="strong">{breakdown.dataScore}/100</s-text>
-                </s-text>
-                <s-text>
-                  AI visibility: <s-text type="strong">{breakdown.visibilityScore}/100</s-text>
-                </s-text>
-              </>
-            )}
-            <s-text color="subdued">
-              Scanned{" "}
-              {scan.finishedAt ? new Date(scan.finishedAt).toLocaleString("en-US") : "—"}
-            </s-text>
-          </s-stack>
-        </s-stack>
-      </s-section>
-
-      <s-section>
-        <s-grid gridTemplateColumns="repeat(auto-fit, minmax(180px, 1fr))" gap="base">
-          <StatCard label="Products scanned" value={String(scan.productsScanned)} />
-          <StatCard label="Issues found" value={String(scan.issuesFound)} />
-          <StatCard label="AI appearances" value={`${appearances}/${totalRuns} runs`} />
-          <StatCard
-            label="Fixes available"
-            value={String(suggestedFixes.length)}
-            hint={appliedCount > 0 ? `${appliedCount} applied` : undefined}
-          />
-        </s-grid>
-      </s-section>
-
-      <s-section heading="AI shopping simulations">
-        <s-paragraph color="subdued">
-          Each question was asked {scan.simulations[0]?.runCount ?? 3} times to a
-          web-grounded AI assistant, without mentioning your store.
-        </s-paragraph>
-        <s-table>
-          <s-table-header-row>
-            <s-table-header>Question</s-table-header>
-            <s-table-header>Your store</s-table-header>
-            <s-table-header>Competitors cited</s-table-header>
-          </s-table-header-row>
-          <s-table-body>
-            {scan.simulations.map((sim) => {
-              const appeared = sim.appearanceCount > 0;
-              return (
-                <s-table-row key={sim.id}>
-                  <s-table-cell>{sim.question}</s-table-cell>
-                  <s-table-cell>
-                    <s-badge tone={appeared ? "success" : "critical"}>
-                      {appeared
-                        ? `Appeared ${sim.appearanceCount}/${sim.runCount}`
-                        : "Not mentioned"}
-                    </s-badge>
-                  </s-table-cell>
-                  <s-table-cell>
-                    {sim.competitors.length > 0 ? sim.competitors.slice(0, 4).join(", ") : "—"}
-                    {sim.competitors.length > 4 ? ` +${sim.competitors.length - 4}` : ""}
-                  </s-table-cell>
-                </s-table-row>
-              );
-            })}
-          </s-table-body>
-        </s-table>
-      </s-section>
-
-      <s-section heading="Suggested fixes">
-        {planIsFree && suggestedFixes.length > 0 && (
-          <s-banner tone="info" heading="Preview the fixes for free">
-            <s-paragraph>
-              Review every suggestion and its before/after diff. Applying fixes
-              to your store is part of the Pro plan.
-            </s-paragraph>
-          </s-banner>
-        )}
-
-        {suggestedFixes.length === 0 ? (
-          <s-paragraph color="subdued">
-            {appliedCount > 0
-              ? "All suggested fixes have been applied. Run a re-scan to measure the impact."
-              : "No fixes to suggest — your catalogue data looks complete."}
-          </s-paragraph>
-        ) : (
-          <s-table>
-            <s-table-header-row>
-              <s-table-header>Product</s-table-header>
-              <s-table-header>Fix</s-table-header>
-              <s-table-header>Why</s-table-header>
-              <s-table-header></s-table-header>
-            </s-table-header-row>
-            <s-table-body>
-              {suggestedFixes.map(({ fix, product }) => (
-                <s-table-row key={fix.id}>
-                  <s-table-cell>{product.title}</s-table-cell>
-                  <s-table-cell>
-                    <s-badge>{FIX_TYPE_LABEL[fix.type]}</s-badge>
-                  </s-table-cell>
-                  <s-table-cell>{fix.rationale ?? "—"}</s-table-cell>
-                  <s-table-cell>
-                    <s-button variant="tertiary" onClick={() => onOpenFix(fix, product)}>
-                      Review
-                    </s-button>
-                  </s-table-cell>
-                </s-table-row>
-              ))}
-            </s-table-body>
-          </s-table>
-        )}
-      </s-section>
-
-      <IssuesSection products={scan.products} />
-    </>
-  );
-}
-
-function StatCard({ label, value, hint }: { label: string; value: string; hint?: string }) {
-  return (
-    <s-box padding="base" borderWidth="base" borderRadius="base">
-      <s-stack direction="block" gap="small-300">
-        <s-text color="subdued">{label}</s-text>
-        <s-heading>{value}</s-heading>
-        {hint && <s-text color="subdued">{hint}</s-text>}
-      </s-stack>
-    </s-box>
-  );
-}
-
-/** Per-product diagnosis, collapsed to products that actually have issues. */
-function IssuesSection({ products }: { products: ProductRow[] }) {
-  const withIssues = products.filter(
-    (product) => (product.issues as unknown as Issue[]).length > 0,
-  );
-  if (withIssues.length === 0) return null;
-
-  return (
-    <s-section heading={`Diagnosis by product (${withIssues.length})`}>
-      <s-table>
-        <s-table-header-row>
-          <s-table-header>Product</s-table-header>
-          <s-table-header>Issues</s-table-header>
-        </s-table-header-row>
-        <s-table-body>
-          {withIssues.map((product) => {
-            const issues = product.issues as unknown as Issue[];
-            return (
-              <s-table-row key={product.id}>
-                <s-table-cell>{product.title}</s-table-cell>
-                <s-table-cell>
-                  <s-stack direction="block" gap="small-300">
-                    {issues.map((issue) => (
-                      <s-stack key={issue.code} direction="inline" gap="small-300">
-                        <s-badge
-                          tone={
-                            issue.severity === "high"
-                              ? "critical"
-                              : issue.severity === "medium"
-                                ? "warning"
-                                : "neutral"
-                          }
-                        >
-                          {issue.severity}
-                        </s-badge>
-                        <s-text>{issue.message}</s-text>
-                      </s-stack>
-                    ))}
-                  </s-stack>
-                </s-table-cell>
-              </s-table-row>
-            );
-          })}
-        </s-table-body>
-      </s-table>
-    </s-section>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Fix modal
-// ---------------------------------------------------------------------------
-
-function FixModal({
-  modalRef,
-  selected,
-  canApply,
-  busy,
-  onApply,
-  onReject,
-  onClosed,
-}: {
-  modalRef: React.RefObject<
-    (HTMLElement & { showOverlay: () => void; hideOverlay: () => void }) | null
-  >;
-  selected: { fix: FixRow; product: ProductRow } | null;
-  canApply: boolean;
-  busy: boolean;
-  onApply: (fixId: string) => void;
-  onReject: (fixId: string) => void;
-  onClosed: () => void;
-}) {
-  const fix = selected?.fix;
-
-  return (
-    <s-modal
-      ref={modalRef as React.Ref<never>}
-      heading={fix ? `${FIX_TYPE_LABEL[fix.type]} — ${selected!.product.title}` : "Fix"}
-      size="large"
-      onAfterHide={onClosed}
-    >
-      {fix && (
-        <s-stack direction="block" gap="base">
-          {fix.rationale && <s-paragraph color="subdued">{fix.rationale}</s-paragraph>}
-
-          <s-box padding="base" borderWidth="base" borderRadius="base" background="subdued">
-            <s-stack direction="block" gap="small-300">
-              <s-text type="strong" color="subdued">
-                Before
-              </s-text>
-              <s-text>{payloadText(fix.type, fix.before)}</s-text>
-            </s-stack>
-          </s-box>
-
-          <s-box padding="base" borderWidth="base" borderRadius="base">
-            <s-stack direction="block" gap="small-300">
-              <s-text type="strong">After</s-text>
-              <s-text>{payloadText(fix.type, fix.after)}</s-text>
-            </s-stack>
-          </s-box>
-
-          {fix.error && (
-            <s-banner tone="critical" heading="Last apply attempt failed">
-              <s-paragraph>{fix.error}</s-paragraph>
-            </s-banner>
-          )}
-
-          {!canApply && (
-            <s-banner tone="info" heading="Applying is a Pro feature">
-              <s-paragraph>
-                Upgrade to Pro to write this change to your store with one
-                click. Your diagnosis and preview stay free.
-              </s-paragraph>
-            </s-banner>
-          )}
-        </s-stack>
-      )}
-
-      {fix && (
-        <s-button
-          slot="secondary-actions"
-          onClick={() => onReject(fix.id)}
-          {...(busy ? { disabled: true } : {})}
-        >
-          Reject
-        </s-button>
-      )}
-      {fix && canApply && (
-        <s-button
-          slot="primary-action"
-          variant="primary"
-          onClick={() => onApply(fix.id)}
-          {...(busy ? { disabled: true } : {})}
-        >
-          Approve &amp; apply
-        </s-button>
-      )}
-    </s-modal>
   );
 }
 
 // ---------------------------------------------------------------------------
 
 export function ErrorBoundary() {
-  return boundary.error(new Error("Dashboard error"));
+  // Pass the real error through: replacing it with a label hides the actual
+  // cause (a Prisma validation error once surfaced here as a bare string).
+  return boundary.error(useRouteError());
 }
 
-export const headers: HeadersFunction = (headersArgs) => {
-  return boundary.headers(headersArgs);
-};
+export const headers: HeadersFunction = (headersArgs) => boundary.headers(headersArgs);

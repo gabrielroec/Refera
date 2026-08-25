@@ -16,7 +16,13 @@
  */
 export const SCAN_PRODUCTS_QUERY = `#graphql
   query ScanProducts($first: Int!, $after: String) {
-    products(first: $first, after: $after, sortKey: UPDATED_AT) {
+    products(
+      first: $first
+      after: $after
+      sortKey: UPDATED_AT
+      reverse: true
+      query: "status:active"
+    ) {
       pageInfo { hasNextPage endCursor }
       nodes {
         id
@@ -27,11 +33,33 @@ export const SCAN_PRODUCTS_QUERY = `#graphql
         vendor
         tags
         status
+        updatedAt
         category { id name fullName }
         seo { title description }
-        images(first: 10) { nodes { altText } }
+        images(first: 10) { nodes { altText url(transform: {maxWidth: 160, maxHeight: 160}) } }
         metafields(first: 25) { nodes { namespace key type value } }
       }
+    }
+  }
+`;
+
+/** Same selection as the scan query, for refreshing one product on a webhook. */
+export const PRODUCT_BY_ID_QUERY = `#graphql
+  query ProductById($id: ID!) {
+    product(id: $id) {
+      id
+      handle
+      title
+      descriptionHtml
+      productType
+      vendor
+      tags
+      status
+      updatedAt
+      category { id name fullName }
+      seo { title description }
+      images(first: 10) { nodes { altText url(transform: {maxWidth: 160, maxHeight: 160}) } }
+      metafields(first: 25) { nodes { namespace key type value } }
     }
   }
 `;
@@ -41,6 +69,7 @@ export const SHOP_INFO_QUERY = `#graphql
     shop {
       name
       myshopifyDomain
+      primaryDomain { host }
       currencyCode
     }
   }

@@ -1,0 +1,380 @@
+{
+  "buildManifest": {
+    "serverBundles": {
+      "nodejs_eyJydW50aW1lIjoibm9kZWpzIn0": {
+        "id": "nodejs_eyJydW50aW1lIjoibm9kZWpzIn0",
+        "file": "build/server/nodejs_eyJydW50aW1lIjoibm9kZWpzIn0/index.js",
+        "config": {
+          "runtime": "nodejs"
+        }
+      }
+    },
+    "routeIdToServerBundleId": {
+      "routes/webhooks.app.scopes_update": "nodejs_eyJydW50aW1lIjoibm9kZWpzIn0",
+      "routes/webhooks.app.uninstalled": "nodejs_eyJydW50aW1lIjoibm9kZWpzIn0",
+      "routes/webhooks.products": "nodejs_eyJydW50aW1lIjoibm9kZWpzIn0",
+      "routes/auth.login": "nodejs_eyJydW50aW1lIjoibm9kZWpzIn0",
+      "routes/_index": "nodejs_eyJydW50aW1lIjoibm9kZWpzIn0",
+      "routes/auth.$": "nodejs_eyJydW50aW1lIjoibm9kZWpzIn0",
+      "routes/app.apply-progress": "nodejs_eyJydW50aW1lIjoibm9kZWpzIn0",
+      "routes/app.progress": "nodejs_eyJydW50aW1lIjoibm9kZWpzIn0",
+      "routes/app.answers": "nodejs_eyJydW50aW1lIjoibm9kZWpzIn0",
+      "routes/app._index": "nodejs_eyJydW50aW1lIjoibm9kZWpzIn0",
+      "routes/app.issues._index": "nodejs_eyJydW50aW1lIjoibm9kZWpzIn0",
+      "routes/app.issues.$slug": "nodejs_eyJydW50aW1lIjoibm9kZWpzIn0",
+      "routes/app.plans": "nodejs_eyJydW50aW1lIjoibm9kZWpzIn0"
+    },
+    "routes": {
+      "root": {
+        "id": "root",
+        "file": "app/root.tsx",
+        "path": "",
+        "config": {}
+      },
+      "routes/webhooks.app.scopes_update": {
+        "id": "routes/webhooks.app.scopes_update",
+        "parentId": "root",
+        "file": "app/routes/webhooks.app.scopes_update.tsx",
+        "path": "webhooks/app/scopes_update",
+        "config": {
+          "runtime": "nodejs"
+        }
+      },
+      "routes/webhooks.app.uninstalled": {
+        "id": "routes/webhooks.app.uninstalled",
+        "parentId": "root",
+        "file": "app/routes/webhooks.app.uninstalled.tsx",
+        "path": "webhooks/app/uninstalled",
+        "config": {
+          "runtime": "nodejs"
+        }
+      },
+      "routes/webhooks.products": {
+        "id": "routes/webhooks.products",
+        "parentId": "root",
+        "file": "app/routes/webhooks.products.tsx",
+        "path": "webhooks/products",
+        "config": {
+          "runtime": "nodejs"
+        }
+      },
+      "routes/auth.login": {
+        "id": "routes/auth.login",
+        "parentId": "root",
+        "file": "app/routes/auth.login/route.tsx",
+        "path": "auth/login",
+        "config": {
+          "runtime": "nodejs"
+        }
+      },
+      "routes/_index": {
+        "id": "routes/_index",
+        "parentId": "root",
+        "file": "app/routes/_index/route.tsx",
+        "index": true,
+        "config": {
+          "runtime": "nodejs"
+        }
+      },
+      "routes/auth.$": {
+        "id": "routes/auth.$",
+        "parentId": "root",
+        "file": "app/routes/auth.$.tsx",
+        "path": "auth/*",
+        "config": {
+          "runtime": "nodejs"
+        }
+      },
+      "routes/app": {
+        "id": "routes/app",
+        "parentId": "root",
+        "file": "app/routes/app.tsx",
+        "path": "app",
+        "config": {}
+      },
+      "routes/app.apply-progress": {
+        "id": "routes/app.apply-progress",
+        "parentId": "routes/app",
+        "file": "app/routes/app.apply-progress.tsx",
+        "path": "apply-progress",
+        "config": {
+          "runtime": "nodejs"
+        }
+      },
+      "routes/app.progress": {
+        "id": "routes/app.progress",
+        "parentId": "routes/app",
+        "file": "app/routes/app.progress.tsx",
+        "path": "progress",
+        "config": {
+          "runtime": "nodejs"
+        }
+      },
+      "routes/app.answers": {
+        "id": "routes/app.answers",
+        "parentId": "routes/app",
+        "file": "app/routes/app.answers.tsx",
+        "path": "answers",
+        "config": {
+          "runtime": "nodejs"
+        }
+      },
+      "routes/app._index": {
+        "id": "routes/app._index",
+        "parentId": "routes/app",
+        "file": "app/routes/app._index.tsx",
+        "index": true,
+        "config": {
+          "runtime": "nodejs"
+        }
+      },
+      "routes/app.issues": {
+        "id": "routes/app.issues",
+        "parentId": "routes/app",
+        "file": "app/routes/app.issues.tsx",
+        "path": "issues",
+        "config": {}
+      },
+      "routes/app.issues._index": {
+        "id": "routes/app.issues._index",
+        "parentId": "routes/app.issues",
+        "file": "app/routes/app.issues._index.tsx",
+        "index": true,
+        "config": {
+          "runtime": "nodejs"
+        }
+      },
+      "routes/app.issues.$slug": {
+        "id": "routes/app.issues.$slug",
+        "parentId": "routes/app.issues",
+        "file": "app/routes/app.issues.$slug.tsx",
+        "path": ":slug",
+        "config": {
+          "runtime": "nodejs"
+        }
+      },
+      "routes/app.plans": {
+        "id": "routes/app.plans",
+        "parentId": "routes/app",
+        "file": "app/routes/app.plans.tsx",
+        "path": "plans",
+        "config": {
+          "runtime": "nodejs"
+        }
+      }
+    }
+  },
+  "reactRouterConfig": {
+    "appDirectory": "/Users/gabrielroec/Refera/app",
+    "basename": "/",
+    "buildDirectory": "/Users/gabrielroec/Refera/build",
+    "future": {
+      "unstable_optimizeDeps": false,
+      "v8_passThroughRequests": false,
+      "v8_trailingSlashAwareDataRequests": false,
+      "unstable_previewServerPrerendering": false,
+      "v8_middleware": false,
+      "v8_splitRouteModules": false,
+      "v8_viteEnvironmentApi": false
+    },
+    "routes": {
+      "root": {
+        "id": "root",
+        "file": "root.tsx",
+        "path": ""
+      },
+      "routes/webhooks.app.scopes_update": {
+        "id": "routes/webhooks.app.scopes_update",
+        "parentId": "root",
+        "file": "routes/webhooks.app.scopes_update.tsx",
+        "path": "webhooks/app/scopes_update"
+      },
+      "routes/webhooks.app.uninstalled": {
+        "id": "routes/webhooks.app.uninstalled",
+        "parentId": "root",
+        "file": "routes/webhooks.app.uninstalled.tsx",
+        "path": "webhooks/app/uninstalled"
+      },
+      "routes/webhooks.products": {
+        "id": "routes/webhooks.products",
+        "parentId": "root",
+        "file": "routes/webhooks.products.tsx",
+        "path": "webhooks/products"
+      },
+      "routes/auth.login": {
+        "id": "routes/auth.login",
+        "parentId": "root",
+        "file": "routes/auth.login/route.tsx",
+        "path": "auth/login"
+      },
+      "routes/_index": {
+        "id": "routes/_index",
+        "parentId": "root",
+        "file": "routes/_index/route.tsx",
+        "index": true
+      },
+      "routes/auth.$": {
+        "id": "routes/auth.$",
+        "parentId": "root",
+        "file": "routes/auth.$.tsx",
+        "path": "auth/*"
+      },
+      "routes/app": {
+        "id": "routes/app",
+        "parentId": "root",
+        "file": "routes/app.tsx",
+        "path": "app"
+      },
+      "routes/app.apply-progress": {
+        "id": "routes/app.apply-progress",
+        "parentId": "routes/app",
+        "file": "routes/app.apply-progress.tsx",
+        "path": "apply-progress"
+      },
+      "routes/app.progress": {
+        "id": "routes/app.progress",
+        "parentId": "routes/app",
+        "file": "routes/app.progress.tsx",
+        "path": "progress"
+      },
+      "routes/app.answers": {
+        "id": "routes/app.answers",
+        "parentId": "routes/app",
+        "file": "routes/app.answers.tsx",
+        "path": "answers"
+      },
+      "routes/app._index": {
+        "id": "routes/app._index",
+        "parentId": "routes/app",
+        "file": "routes/app._index.tsx",
+        "index": true
+      },
+      "routes/app.issues": {
+        "id": "routes/app.issues",
+        "parentId": "routes/app",
+        "file": "routes/app.issues.tsx",
+        "path": "issues"
+      },
+      "routes/app.issues._index": {
+        "id": "routes/app.issues._index",
+        "parentId": "routes/app.issues",
+        "file": "routes/app.issues._index.tsx",
+        "index": true
+      },
+      "routes/app.issues.$slug": {
+        "id": "routes/app.issues.$slug",
+        "parentId": "routes/app.issues",
+        "file": "routes/app.issues.$slug.tsx",
+        "path": ":slug"
+      },
+      "routes/app.plans": {
+        "id": "routes/app.plans",
+        "parentId": "routes/app",
+        "file": "routes/app.plans.tsx",
+        "path": "plans"
+      }
+    },
+    "routeDiscovery": {
+      "mode": "lazy",
+      "manifestPath": "/__manifest"
+    },
+    "serverBuildFile": "index.js",
+    "serverModuleFormat": "esm",
+    "ssr": true,
+    "subResourceIntegrity": false,
+    "allowedActionOrigins": false,
+    "unstable_routeConfig": [
+      {
+        "id": "root",
+        "path": "",
+        "file": "root.tsx",
+        "children": [
+          {
+            "id": "routes/webhooks.app.scopes_update",
+            "file": "routes/webhooks.app.scopes_update.tsx",
+            "path": "webhooks/app/scopes_update"
+          },
+          {
+            "id": "routes/webhooks.app.uninstalled",
+            "file": "routes/webhooks.app.uninstalled.tsx",
+            "path": "webhooks/app/uninstalled"
+          },
+          {
+            "id": "routes/webhooks.products",
+            "file": "routes/webhooks.products.tsx",
+            "path": "webhooks/products"
+          },
+          {
+            "id": "routes/auth.login",
+            "file": "routes/auth.login/route.tsx",
+            "path": "auth/login"
+          },
+          {
+            "id": "routes/_index",
+            "file": "routes/_index/route.tsx",
+            "index": true
+          },
+          {
+            "id": "routes/auth.$",
+            "file": "routes/auth.$.tsx",
+            "path": "auth/*"
+          },
+          {
+            "id": "routes/app",
+            "file": "routes/app.tsx",
+            "path": "app",
+            "children": [
+              {
+                "id": "routes/app.apply-progress",
+                "file": "routes/app.apply-progress.tsx",
+                "path": "apply-progress"
+              },
+              {
+                "id": "routes/app.progress",
+                "file": "routes/app.progress.tsx",
+                "path": "progress"
+              },
+              {
+                "id": "routes/app.answers",
+                "file": "routes/app.answers.tsx",
+                "path": "answers"
+              },
+              {
+                "id": "routes/app._index",
+                "file": "routes/app._index.tsx",
+                "index": true
+              },
+              {
+                "id": "routes/app.issues",
+                "file": "routes/app.issues.tsx",
+                "path": "issues",
+                "children": [
+                  {
+                    "id": "routes/app.issues._index",
+                    "file": "routes/app.issues._index.tsx",
+                    "index": true
+                  },
+                  {
+                    "id": "routes/app.issues.$slug",
+                    "file": "routes/app.issues.$slug.tsx",
+                    "path": ":slug"
+                  }
+                ]
+              },
+              {
+                "id": "routes/app.plans",
+                "file": "routes/app.plans.tsx",
+                "path": "plans"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "viteConfig": {
+    "build": {
+      "assetsDir": "assets"
+    }
+  }
+}

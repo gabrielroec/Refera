@@ -23,6 +23,25 @@ export interface ScanPayload {
  */
 export const scanTask = task({
   id: "scan",
+  /**
+   * Safety net for deaths that never reach runScanPipeline's own catch —
+   * maxDuration kills, OOM, worker crashes. Without this the Scan row stays
+   * `running` forever and the dashboard spinner never resolves.
+   */
+  onFailure: async ({ payload, error }: { payload: ScanPayload; error: unknown }) => {
+    const message = error instanceof Error ? error.message : String(error);
+    await prisma.scan
+      .updateMany({
+        where: { id: payload.scanId, status: "running" },
+        data: {
+          status: "failed",
+          error: `Scan run failed: ${message}`,
+          finishedAt: new Date(),
+        },
+      })
+      .catch(() => {});
+    await prisma.$disconnect().catch(() => {});
+  },
   run: async (payload: ScanPayload) => {
     logger.info("Scan starting", { ...payload });
 

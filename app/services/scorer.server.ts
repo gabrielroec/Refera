@@ -1,6 +1,8 @@
 import { SCORE_WEIGHTS } from "../lib/constants";
+import { ISSUE_DEFINITIONS } from "../lib/issues";
 import type {
   Issue,
+  IssueCode,
   IssueSeverity,
   ScoreBreakdown,
   SimulationResult,
@@ -110,4 +112,80 @@ export function computeScore(
       distinctCompetitors,
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Issue grouping
+// ---------------------------------------------------------------------------
+
+export interface IssueGroup {
+  code: IssueCode;
+  slug: string;
+  label: string;
+  why: string;
+  severity: IssueSeverity;
+  fixable: boolean;
+  /** How many products carry this issue. */
+  productCount: number;
+  /** Fixes already generated and awaiting review, across those products. */
+  readyFixes: number;
+  /**
+   * Points the headline score would gain if every instance were resolved.
+   * This is what ranks the list — a merchant should spend their attention
+   * where it moves the number, not where the count happens to be highest.
+   */
+  scoreImpact: number;
+}
+
+export interface ProductIssues {
+  issues: Issue[];
+  /** Fixes awaiting review on this product, keyed by the issue they resolve. */
+  fixesByIssue?: Partial<Record<IssueCode, number>>;
+}
+
+/**
+ * Collapses per-product issues into one row per issue type.
+ *
+ * The screen this feeds replaces a 39-row product table containing 158 inline
+ * messages: the merchant decides once per problem, not once per product.
+ */
+export function computeIssueGroups(products: ProductIssues[]): IssueGroup[] {
+  const dataScore = computeDataScore(products.map((p) => p.issues));
+
+  const seen = new Map<IssueCode, { products: number; fixes: number }>();
+  for (const product of products) {
+    for (const issue of product.issues) {
+      const entry = seen.get(issue.code) ?? { products: 0, fixes: 0 };
+      entry.products += 1;
+      entry.fixes += product.fixesByIssue?.[issue.code] ?? 0;
+      seen.set(issue.code, entry);
+    }
+  }
+
+  const groups: IssueGroup[] = [];
+  for (const [code, entry] of seen) {
+    const definition = ISSUE_DEFINITIONS[code];
+    if (!definition) continue;
+
+    // Recompute the catalogue score as if this issue type did not exist; the
+    // difference is what resolving it is worth, after the 50/50 weighting.
+    const without = computeDataScore(
+      products.map((p) => p.issues.filter((i) => i.code !== code)),
+    );
+    const scoreImpact = Math.round((without - dataScore) * SCORE_WEIGHTS.data);
+
+    groups.push({
+      code,
+      slug: definition.slug,
+      label: definition.label,
+      why: definition.why,
+      severity: definition.severity,
+      fixable: definition.fixable,
+      productCount: entry.products,
+      readyFixes: entry.fixes,
+      scoreImpact,
+    });
+  }
+
+  return groups.sort((a, b) => b.scoreImpact - a.scoreImpact);
 }

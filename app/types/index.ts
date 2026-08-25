@@ -20,6 +20,10 @@ export interface MetafieldEntry {
 /** A product as returned by the scanner, before it is persisted. */
 export interface ScannedProduct {
   productId: string;
+  /** ACTIVE | DRAFT | ARCHIVED — only ACTIVE products are scanned. */
+  status: string;
+  /** Shopify's updatedAt (ISO), for newest-first ordering of the mirror. */
+  updatedAt: string | null;
   handle: string | null;
   title: string;
   /** Raw HTML from the Admin API. */
@@ -33,6 +37,8 @@ export interface ScannedProduct {
   tags: string[];
   imageCount: number;
   hasAltText: boolean;
+  /** Thumbnail URL of the first image, when the product has one. */
+  imageUrl: string | null;
   metafields: MetafieldEntry[];
   seoTitle: string | null;
   seoDescription: string | null;
@@ -161,7 +167,10 @@ export interface GeneratedFix {
 
 /** Everything the simulator needs to write believable buyer questions. */
 export interface StoreContext {
+  /** myshopify domain. */
   domain: string;
+  /** The storefront's real host (custom domain when set) — what web search cites. */
+  primaryDomain: string | null;
   name: string | null;
   niche: string | null;
   currencyCode: string | null;

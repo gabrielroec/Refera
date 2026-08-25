@@ -17,6 +17,17 @@ export interface GenerateOptions {
   grounded?: boolean;
   temperature?: number;
   maxOutputTokens?: number;
+  /**
+   * Per-call model override. Lets cheap extraction/classification calls run
+   * on a smaller, faster model while generation stays on the default.
+   */
+  model?: string;
+  /**
+   * Abort the call after this many milliseconds. Web-grounded generation has a
+   * long tail — a single stuck request would otherwise hold up a whole scan
+   * phase, since the phase finishes only when its slowest call does.
+   */
+  timeoutMs?: number;
 }
 
 export interface GenerateResult {
@@ -29,9 +40,26 @@ export interface GenerateResult {
   sources: string[];
 }
 
+/** A grounded answer that also carries a structured extraction of itself. */
+export interface GroundedJSONResult<T> extends GenerateResult {
+  data: T;
+}
+
 export interface LLMProvider {
   readonly name: string;
   readonly model: string;
+  /**
+   * Model used when a caller asks for the `fast` tier (extraction,
+   * classification). Falls back to `model` when the provider has no cheaper
+   * sibling configured.
+   */
+  readonly fastModel: string;
+
+  /**
+   * Whether `generateGroundedJSON` is available. When false, callers must
+   * ground first and extract in a second ungrounded call.
+   */
+  readonly supportsGroundedJSON: boolean;
 
   /** Free-form generation. */
   generate(options: GenerateOptions): Promise<GenerateResult>;
@@ -43,6 +71,15 @@ export interface LLMProvider {
   generateJSON<T>(
     options: Omit<GenerateOptions, "grounded"> & { schema: object },
   ): Promise<T>;
+
+  /**
+   * Web-grounded generation whose output is ALSO constrained to `schema`.
+   * Lets one call both answer a shopper's question and report, structurally,
+   * what it said — removing a whole extraction round-trip.
+   */
+  generateGroundedJSON<T>(
+    options: Omit<GenerateOptions, "grounded"> & { schema: object },
+  ): Promise<GroundedJSONResult<T>>;
 }
 
 /** Raised when the provider fails after exhausting retries. */

@@ -13,5 +13,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     await db.session.deleteMany({ where: { shop } });
   }
 
+  // Product webhooks stop at uninstall, so the mirror stops being maintained.
+  // Clearing the sync timestamp forces a full rebuild on the first scan after
+  // a reinstall instead of trusting a mirror frozen at uninstall time.
+  await db.shop.updateMany({
+    where: { domain: shop },
+    data: { catalogSyncedAt: null },
+  });
+
   return new Response();
 };

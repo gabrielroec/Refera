@@ -6,10 +6,12 @@ import {
 } from "../lib/constants";
 import {
   adminQuery,
+  PRODUCT_BY_ID_QUERY,
   SCAN_PRODUCTS_QUERY,
   SHOP_INFO_QUERY,
   type AdminGraphQLClient,
 } from "../lib/graphql";
+import { stableHash } from "../lib/hash";
 import type { Issue, MetafieldEntry, ScannedProduct } from "../types";
 
 // ---------------------------------------------------------------------------
@@ -25,9 +27,10 @@ interface ProductNode {
   vendor: string | null;
   tags: string[];
   status: string;
+  updatedAt: string | null;
   category: { id: string; name: string; fullName: string } | null;
   seo: { title: string | null; description: string | null } | null;
-  images: { nodes: Array<{ altText: string | null }> };
+  images: { nodes: Array<{ altText: string | null; url: string | null }> };
   metafields: { nodes: MetafieldEntry[] };
 }
 
@@ -38,10 +41,15 @@ interface ScanProductsData {
   };
 }
 
+interface ProductByIdData {
+  product: ProductNode | null;
+}
+
 interface ShopInfoData {
   shop: {
     name: string;
     myshopifyDomain: string;
+    primaryDomain: { host: string } | null;
     currencyCode: string;
   };
 }
@@ -79,6 +87,8 @@ function toScannedProduct(node: ProductNode): ScannedProduct {
   const images = node.images?.nodes ?? [];
   return {
     productId: node.id,
+    status: node.status,
+    updatedAt: node.updatedAt,
     handle: node.handle,
     title: node.title,
     descriptionHtml: node.descriptionHtml,
@@ -90,10 +100,42 @@ function toScannedProduct(node: ProductNode): ScannedProduct {
     tags: node.tags ?? [],
     imageCount: images.length,
     hasAltText: images.some((i) => Boolean(i.altText?.trim())),
+    imageUrl: images.find((i) => i.url)?.url ?? null,
     metafields: node.metafields?.nodes ?? [],
     seoTitle: node.seo?.title || null,
     seoDescription: node.seo?.description || null,
   };
+}
+
+/**
+ * Hash of exactly the fields the pipeline reasons about.
+ *
+ * `updatedAt` and `status` are deliberately excluded: inventory edits bump
+ * updatedAt without changing anything an AI assistant could read, and that
+ * must not invalidate cached analysis.
+ */
+export function productContentHash(product: ScannedProduct): string {
+  return stableHash({
+    title: product.title,
+    description: product.description,
+    categoryId: product.categoryId,
+    productType: product.productType,
+    vendor: product.vendor,
+    tags: [...product.tags].sort(),
+    imageCount: product.imageCount,
+    hasAltText: product.hasAltText,
+    metafields: product.metafields
+      .map((m) => ({ namespace: m.namespace, key: m.key, value: m.value }))
+      // Binary comparison, not localeCompare: the hash must be identical
+      // across processes that may run under different locales (web app on
+      // Vercel vs the Trigger.dev worker), or carry-forward silently breaks.
+      .sort((a, b) => {
+        const ka = `${a.namespace}.${a.key}`;
+        const kb = `${b.namespace}.${b.key}`;
+        return ka < kb ? -1 : ka > kb ? 1 : 0;
+      }),
+    seoDescription: product.seoDescription,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -186,7 +228,10 @@ export function detectIssues(product: ScannedProduct): Issue[] {
       message:
         "No SEO description. Crawlers that feed AI systems often read this before the body copy.",
       field: "seo.description",
-      fixable: true,
+      // No generator exists for this yet (it needs the approved description
+      // as input). Advertising it as fixable would let it consume fix-budget
+      // slots and never produce a Fix row.
+      fixable: false,
     });
   }
 
@@ -200,6 +245,8 @@ export function detectIssues(product: ScannedProduct): Issue[] {
 export interface ShopInfo {
   name: string;
   domain: string;
+  /** The storefront's real host (custom domain when set) — what web search cites. */
+  primaryDomain: string | null;
   currencyCode: string;
 }
 
@@ -210,12 +257,13 @@ export async function fetchShopInfo(
   return {
     name: data.shop.name,
     domain: data.shop.myshopifyDomain,
+    primaryDomain: data.shop.primaryDomain?.host ?? null,
     currencyCode: data.shop.currencyCode,
   };
 }
 
 /**
- * Pulls up to MAX_PRODUCTS_PER_SCAN products, newest-updated first.
+ * Pulls up to MAX_PRODUCTS_PER_SCAN active products, newest-updated first.
  *
  * Paginates rather than asking for 50 at once: the Admin API cost budget makes
  * a single large page with nested connections prone to throttling.
@@ -225,6 +273,10 @@ export async function fetchProducts(
   limit: number = MAX_PRODUCTS_PER_SCAN,
 ): Promise<ScannedProduct[]> {
   const products: ScannedProduct[] = [];
+  // A product edited between page fetches can shift past the cursor and come
+  // back on a later page; a duplicate would violate the (scanId, productId)
+  // unique constraint at persist time and sink the scan.
+  const seen = new Set<string>();
   let after: string | null = null;
 
   while (products.length < limit) {
@@ -235,7 +287,11 @@ export async function fetchProducts(
       { first: Math.min(PRODUCTS_PAGE_SIZE, remaining), after },
     );
 
-    products.push(...data.products.nodes.map(toScannedProduct));
+    for (const node of data.products.nodes) {
+      if (seen.has(node.id)) continue;
+      seen.add(node.id);
+      products.push(toScannedProduct(node));
+    }
 
     if (!data.products.pageInfo.hasNextPage) break;
     after = data.products.pageInfo.endCursor;
@@ -243,4 +299,15 @@ export async function fetchProducts(
   }
 
   return products.slice(0, limit);
+}
+
+/** Fetches one product with the scan selection; null when it no longer exists. */
+export async function fetchProductById(
+  admin: AdminGraphQLClient,
+  productId: string,
+): Promise<ScannedProduct | null> {
+  const data = await adminQuery<ProductByIdData>(admin, PRODUCT_BY_ID_QUERY, {
+    id: productId,
+  });
+  return data.product ? toScannedProduct(data.product) : null;
 }
