@@ -36,3 +36,4 @@ pnpm-lock.yaml
 
 # Vercel CLI link + build artifacts
 .vercel
+.env*
