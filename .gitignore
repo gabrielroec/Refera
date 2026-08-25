@@ -37,3 +37,6 @@ pnpm-lock.yaml
 # Vercel CLI link + build artifacts
 .vercel
 .env*
+
+# Local dev app config — rewritten with a new tunnel URL on every `shopify app dev`
+shopify.app.dev.toml
