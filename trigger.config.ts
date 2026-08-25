@@ -70,6 +70,23 @@ export default defineConfig({
           "OPENAI_FAST_MODEL",
         ];
 
+        // OPENAI_FAST_MODEL is the one name allowed to be absent: the provider
+        // falls back to the standard model. Everything else missing means the
+        // worker would deploy and then fail at runtime, so fail here instead —
+        // silently shipping a worker without DATABASE_URL is the whole reason
+        // this list is explicit.
+        const OPTIONAL = new Set(["OPENAI_FAST_MODEL", "LLM_GROUNDING"]);
+
+        const missing = NEEDED.filter(
+          (name) => !process.env[name] && !OPTIONAL.has(name),
+        );
+        if (missing.length > 0) {
+          throw new Error(
+            `Cannot deploy: ${missing.join(", ")} missing from .env. ` +
+              "The worker needs these at runtime and does not inherit them from Vercel.",
+          );
+        }
+
         const synced = NEEDED.flatMap((name) => {
           const value = process.env[name];
           return value ? [{ name, value }] : [];

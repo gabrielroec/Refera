@@ -16,9 +16,26 @@ declare global {
  */
 const SESSION_POOL_SIZE = 5;
 
+/**
+ * Concurrent queries the background worker can have in flight.
+ *
+ * The scan's longest phase runs SIMULATION_CONCURRENCY + FIX_CONCURRENCY items
+ * under one Promise.all, and each item writes its result. Unlike a serverless
+ * instance, the worker is a single long-lived process, so those all contend for
+ * one client's pool — at connection_limit=1 they queue behind each other and
+ * the slowest ones hit Prisma's default 10s acquire timeout with a P2024 that
+ * fails the whole scan.
+ */
+const WORKER_POOL_SIZE = 10;
+
+/** True inside a deployed Trigger.dev worker. */
+function isWorker(): boolean {
+  return Boolean(process.env.TRIGGER_DEPLOYMENT_ID);
+}
+
 /** True on Vercel or inside a deployed Trigger.dev worker. */
 function isDeployed(): boolean {
-  return Boolean(process.env.VERCEL || process.env.TRIGGER_DEPLOYMENT_ID);
+  return Boolean(process.env.VERCEL) || isWorker();
 }
 
 /**
@@ -48,7 +65,13 @@ function connectionUrl(): string | undefined {
     if (!pooled) return undefined;
     const url = new URL(pooled);
     if (!url.searchParams.has("connection_limit")) {
-      url.searchParams.set("connection_limit", "1");
+      // One connection per serverless instance, because there are many of them
+      // and each handles one request. The worker is the opposite shape — one
+      // process running twenty things at once — so it gets a real pool.
+      url.searchParams.set("connection_limit", isWorker() ? String(WORKER_POOL_SIZE) : "1");
+    }
+    if (isWorker() && !url.searchParams.has("pool_timeout")) {
+      url.searchParams.set("pool_timeout", "20");
     }
     return url.toString();
   }

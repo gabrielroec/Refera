@@ -41,6 +41,21 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 // Action
 // ---------------------------------------------------------------------------
 
+/**
+ * Postgres unique-violation, as Prisma reports it.
+ *
+ * Matched on the code rather than the message: the message is localised and the
+ * constraint name would tie this to one index.
+ */
+function isUniqueViolation(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "P2002"
+  );
+}
+
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const shop = await ensureShop(session.shop);
@@ -63,9 +78,23 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     };
   }
 
-  const scan = await prisma.scan.create({
-    data: { shopId: shop.id, status: "queued" },
-  });
+  let scan;
+  try {
+    scan = await prisma.scan.create({
+      data: { shopId: shop.id, status: "queued" },
+    });
+  } catch (error) {
+    // A partial unique index allows one queued-or-running scan per shop, which
+    // is what stops a double-clicked button from starting two runs of 30+
+    // grounded LLM calls. The gate above catches almost every case; this
+    // catches the one it cannot, where two requests pass it at the same moment.
+    // Without this the merchant gets a raw 500 instead of the same message the
+    // gate would have given them.
+    if (isUniqueViolation(error)) {
+      return { ok: false as const, error: "A scan is already running." };
+    }
+    throw error;
+  }
 
   try {
     const handle = await tasks.trigger<typeof scanTask>("scan", {
