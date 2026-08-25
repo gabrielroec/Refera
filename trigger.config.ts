@@ -1,6 +1,14 @@
 import { defineConfig } from "@trigger.dev/sdk";
 import { prismaExtension } from "@trigger.dev/build/extensions/prisma";
-import { syncVercelEnvVars } from "@trigger.dev/build/extensions/core";
+import { syncEnvVars } from "@trigger.dev/build/extensions/core";
+import { config as loadEnvFile } from "dotenv";
+
+/**
+ * Must match `application_url` in shopify.app.toml. Not a secret, and not taken
+ * from .env: locally that variable is http://localhost:3000, and a worker
+ * deployed to production pointing at a laptop is worse than one that fails.
+ */
+const PRODUCTION_APP_URL = "https://refera-eight.vercel.app";
 
 export default defineConfig({
   // Set TRIGGER_PROJECT_REF in .env (and in Vercel) after creating the
@@ -28,27 +36,48 @@ export default defineConfig({
       }),
 
       /**
-       * Pulls this project's Vercel Production variables into Trigger at deploy
-       * time, so Vercel is the one place environment lives.
+       * Copies this machine's environment into the Trigger.dev environment at
+       * deploy time.
        *
-       * Worth the indirection because the failure it prevents is quiet: the web
-       * app and the worker read the same DATABASE_URL and the same Shopify
-       * credentials, and if the two drift, the worker writes scans to one
-       * database while the dashboard reads another — with nothing on screen to
-       * say so.
+       * The worker needs the same credentials the web app does — it reads the
+       * catalogue through the Shopify Admin API, calls OpenAI, and writes to the
+       * same database — but Trigger does not inherit anything from Vercel, and a
+       * deploy indexes tasks by *importing* them, so a missing SHOPIFY_APP_URL
+       * fails the build rather than the first run.
        *
-       * The two ids are written here rather than left to environment variables
-       * because they are identifiers, not credentials — every Vercel API call
-       * still needs the token, so on their own they open nothing. That leaves
-       * exactly one secret to configure: VERCEL_ACCESS_TOKEN, in the Trigger.dev
-       * environment.
+       * Names are listed rather than sweeping process.env, so nothing unrelated
+       * to the worker is ever published. Values are read straight from .env and
+       * never printed.
        *
-       * Skipped entirely when the build target is `dev`, so local
-       * `trigger dev` keeps reading .env.
+       * The variable this most needs to keep identical on both sides is
+       * DATABASE_URL: if the worker and the dashboard ever point at different
+       * databases, scans are written where nobody reads them, and nothing on
+       * screen says so.
        */
-      syncVercelEnvVars({
-        projectId: "prj_IPoZa0mhWwq6GODBeu7ZXQRJvv0E",
-        vercelTeamId: "team_nFDwAqY1t0oWIxQ1Vdwfou4e",
+      syncEnvVars(() => {
+        loadEnvFile({ path: ".env", override: false, quiet: true });
+
+        const NEEDED = [
+          "DATABASE_URL",
+          "DIRECT_URL",
+          "SHOPIFY_API_KEY",
+          "SHOPIFY_API_SECRET",
+          "SCOPES",
+          "LLM_PROVIDER",
+          "LLM_GROUNDING",
+          "OPENAI_API_KEY",
+          "OPENAI_MODEL",
+          "OPENAI_FAST_MODEL",
+        ];
+
+        const synced = NEEDED.flatMap((name) => {
+          const value = process.env[name];
+          return value ? [{ name, value }] : [];
+        });
+
+        synced.push({ name: "SHOPIFY_APP_URL", value: PRODUCTION_APP_URL });
+
+        return synced;
       }),
     ],
   },

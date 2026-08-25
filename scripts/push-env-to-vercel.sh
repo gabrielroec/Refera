@@ -44,7 +44,10 @@ VARS=(
 
 for name in "${VARS[@]}"; do
   # Take everything after the first "=", then strip one layer of quotes.
-  value="$(grep -E "^${name}=" .env | head -1 | cut -d= -f2- | sed -e 's/^"//' -e 's/"$//')"
+  # `|| true` matters: with `set -o pipefail`, a grep that matches nothing
+  # fails the pipeline and `set -e` kills the whole script — silently skipping
+  # every variable after the first one that is absent from .env.
+  value="$(grep -E "^${name}=" .env 2>/dev/null | head -1 | cut -d= -f2- | sed -e 's/^"//' -e 's/"$//' || true)"
 
   if [ -z "$value" ]; then
     echo "skip   $name  (not set in .env)"
