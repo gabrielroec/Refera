@@ -64,8 +64,4 @@ redirect_urls = [ "https://refera-eight.vercel.app/auth/callback" ]
 # writes shopify.app.dev.toml, and `shopify app dev --config dev` uses it.
 automatically_update_urls_on_dev = false
 
-# Send this file's contents on `shopify app deploy`, so the URLs and webhook
-# subscriptions here are what Shopify actually stores.
-include_config_on_deploy = true
-
 dev_store_url = "refera-phbopjeb.myshopify.com"
