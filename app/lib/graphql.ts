@@ -1,9 +1,13 @@
 /**
  * Admin GraphQL operations.
  *
- * Every operation here was validated against the 2025-10 Admin schema with the
+ * Every operation here was validated against the 2026-07 Admin schema with the
  * Shopify Dev MCP. Keep them in one file so re-validating after an API version
  * bump is a single sweep.
+ *
+ * The version is pinned in two places that must agree: `apiVersion` in
+ * app/shopify.server.ts (what the client sends) and `api_version` under
+ * [webhooks] in shopify.app.toml (what Shopify sends us).
  */
 
 /**

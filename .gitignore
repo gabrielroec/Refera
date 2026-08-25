@@ -33,3 +33,6 @@ pnpm-lock.yaml
 
 # Trigger.dev local build cache
 .trigger/
+
+# Vercel CLI link + build artifacts
+.vercel
