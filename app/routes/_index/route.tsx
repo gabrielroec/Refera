@@ -21,9 +21,10 @@ export default function App() {
   return (
     <div className={styles.index}>
       <div className={styles.content}>
-        <h1 className={styles.heading}>A short heading about [your app]</h1>
+        <h1 className={styles.heading}>Refera — AI Visibility for Shopify</h1>
         <p className={styles.text}>
-          A tagline about [your app] that describes your value proposition.
+          See how often ChatGPT and other AI assistants recommend your store,
+          and fix the product data that keeps you out of their answers.
         </p>
         {showForm && (
           <Form className={styles.form} method="post" action="/auth/login">
@@ -39,18 +40,21 @@ export default function App() {
         )}
         <ul className={styles.list}>
           <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+            <strong>Scan</strong>. Refera reads your catalogue and asks AI
+            assistants the questions your buyers ask.
           </li>
           <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+            <strong>Score</strong>. You see how often your store came up, who
+            was recommended instead, and why.
           </li>
           <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+            <strong>Fix</strong>. Ready-to-apply rewrites for every product,
+            with a before/after preview. Nothing changes without your approval.
           </li>
         </ul>
+        <p className={styles.text}>
+          <a href="/privacy">Privacy policy</a>
+        </p>
       </div>
     </div>
   );
