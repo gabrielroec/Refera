@@ -1,9 +1,5 @@
-import type {
-  ActionFunctionArgs,
-  HeadersFunction,
-  LoaderFunctionArgs,
-} from "react-router";
-import { useFetcher, useLoaderData, useRouteError } from "react-router";
+import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
+import { useLoaderData, useRouteError } from "react-router";
 import { useEffect } from "react";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { boundary } from "@shopify/shopify-app-react-router/server";
@@ -53,35 +49,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   return {
     plan: plan.planHandle,
     justApproved: justApproved !== null && plan.planHandle !== "free",
-    purchasable: billingConfigured(),
+    // Shopify hosts the plan page; the charge is created and approved there.
+    planPageUrl: billingConfigured() ? planSelectionUrl(session.shop, APP_HANDLE) : null,
     hasUsedFreeScan: plan.hasUsedFreeScan,
     appearances: overview.appearances,
     totalRuns: overview.totalRuns,
     highSeverityIssueTypes: overview.topIssues.filter((g) => g.severity === "high")
       .length,
   };
-};
-
-// ---------------------------------------------------------------------------
-// Action
-// ---------------------------------------------------------------------------
-
-/**
- * "Choose" sends the merchant to Shopify's own plan page. The charge is created
- * and approved there, never here — Shopify App Pricing owns the whole flow, and
- * an app that creates its own charges on top of it is a review rejection.
- */
-export const action = async ({ request }: ActionFunctionArgs) => {
-  const { session, redirect } = await authenticate.admin(request);
-  const form = await request.formData();
-  if (form.get("intent") !== "choose") {
-    return { ok: false as const, error: "Unknown action." };
-  }
-  if (!billingConfigured()) {
-    return { ok: false as const, error: "Billing is not connected yet." };
-  }
-  // The plan page lives outside the app iframe.
-  return redirect(planSelectionUrl(session.shop, APP_HANDLE), { target: "_top" });
 };
 
 // ---------------------------------------------------------------------------
@@ -112,22 +87,16 @@ export default function Plans() {
   const {
     plan,
     justApproved,
-    purchasable,
+    planPageUrl,
     hasUsedFreeScan,
     appearances,
     totalRuns,
     highSeverityIssueTypes,
   } = useLoaderData<typeof loader>();
   const shopify = useAppBridge();
-  const fetcher = useFetcher<typeof action>();
-
   useEffect(() => {
     if (justApproved) shopify.toast.show("You're all set — your plan is active.");
   }, [justApproved, shopify]);
-
-  useEffect(() => {
-    if (fetcher.data && !fetcher.data.ok) shopify.toast.show(fetcher.data.error);
-  }, [fetcher.data, shopify]);
 
   const recommended = recommendedPlan(appearances, totalRuns, highSeverityIssueTypes);
   // With no scan to reason from there is no recommendation to make, but the
@@ -135,12 +104,13 @@ export default function Plans() {
   const featured: PaidPlanId = recommended ?? "growth";
 
   const choose = () => {
-    if (!purchasable) {
+    if (!planPageUrl) {
       // A Choose button that silently does nothing is worse than no button.
       shopify.toast.show("Billing is not connected yet.");
       return;
     }
-    fetcher.submit({ intent: "choose" }, { method: "post" });
+    // The plan page lives outside the app iframe; App Bridge honours `_top`.
+    window.open(planPageUrl, "_top");
   };
 
   return (

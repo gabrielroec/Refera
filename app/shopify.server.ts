@@ -16,10 +16,14 @@ const shopify = shopifyApp({
   authPathPrefix: "/auth",
   sessionStorage: new PrismaSessionStorage(prisma),
   distribution: AppDistribution.AppStore,
-  // No expiring offline tokens: the scan runs for many minutes inside a
-  // Trigger.dev worker using the stored offline session, and a 2-hour token
-  // dies mid-scan with a 401 the worker cannot refresh. Permanent offline
-  // tokens are the standard for apps with background jobs.
+  // Expiring offline tokens, refreshed by the library. Apps created after
+  // April 2026 only ever get expiring tokens from Shopify, whatever they ask
+  // for — the stored token went stale within days and every Admin API call
+  // from a background job answered 403. With this flag the session carries a
+  // refresh token, and `unauthenticated.admin()` renews the access token
+  // before handing out a client, so a job that starts with a fresh token has
+  // hours of headroom for a scan that takes minutes.
+  future: { expiringOfflineAccessTokens: true },
   ...(process.env.SHOP_CUSTOM_DOMAIN
     ? { customShopDomains: [process.env.SHOP_CUSTOM_DOMAIN] }
     : {}),
