@@ -3,13 +3,17 @@ import { useLoaderData, useRouteError } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 
 import { authenticate } from "../shopify.server";
-import { ensureShop } from "../services/billing.server";
+import { ensureShop, getPlanState } from "../services/billing.server";
 import { loadAnswers } from "../services/dashboard.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const shop = await ensureShop(session.shop);
-  return loadAnswers(shop.id);
+  const plan = await getPlanState(shop.id);
+  const data = await loadAnswers(shop.id, {
+    competitors: plan.entitlements.competitorTracking,
+  });
+  return { ...data, competitorTracking: plan.entitlements.competitorTracking };
 };
 
 /**
@@ -20,8 +24,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
  * answers, and who was recommended instead.
  */
 export default function AnswersScreen() {
-  const { answers, appearances, totalRuns, leaderboard } =
-    useLoaderData<typeof loader>();
+  const {
+    answers,
+    appearances,
+    totalRuns,
+    competitorCount,
+    leaderboard,
+    competitorTracking,
+  } = useLoaderData<typeof loader>();
 
   if (answers.length === 0) {
     return (
@@ -84,6 +94,21 @@ export default function AnswersScreen() {
           })}
         </s-stack>
       </s-section>
+
+      {!competitorTracking && competitorCount > 0 && (
+        <s-section heading="Who gets recommended">
+          <s-stack direction="block" gap="base">
+            <s-text>
+              AI named {competitorCount} other brand{competitorCount === 1 ? "" : "s"}{" "}
+              across these {totalRuns} answers. Competitor tracking on the Growth
+              plan shows you which, and how often.
+            </s-text>
+            <s-button href="/app/plans" variant="primary">
+              See plans
+            </s-button>
+          </s-stack>
+        </s-section>
+      )}
 
       {leaderboard.length > 0 && (
         <s-section heading="Who gets recommended">

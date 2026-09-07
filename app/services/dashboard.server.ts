@@ -460,7 +460,9 @@ export interface AnswersData {
   answers: AnswerRow[];
   appearances: number;
   totalRuns: number;
-  /** Every brand cited, most frequently cited first. */
+  /** Distinct brands cited — always populated, so Free sees what it is missing. */
+  competitorCount: number;
+  /** Every brand cited, most frequently cited first. Empty without competitor tracking. */
   leaderboard: Array<{ name: string; mentions: number }>;
 }
 
@@ -470,10 +472,13 @@ export interface AnswersData {
  * This is the evidence screen: the exact questions asked, how often the store
  * surfaced, and who was recommended instead.
  */
-export async function loadAnswers(shopId: string): Promise<AnswersData> {
+export async function loadAnswers(
+  shopId: string,
+  options: { competitors: boolean },
+): Promise<AnswersData> {
   const scanId = await latestScanId(shopId);
   if (!scanId) {
-    return { answers: [], appearances: 0, totalRuns: 0, leaderboard: [] };
+    return { answers: [], appearances: 0, totalRuns: 0, competitorCount: 0, leaderboard: [] };
   }
 
   const simulations = await prisma.simulation.findMany({
@@ -506,7 +511,7 @@ export async function loadAnswers(shopId: string): Promise<AnswersData> {
         question: sim.question,
         appearanceCount: sim.appearanceCount,
         runCount: sim.runCount,
-        competitors: sim.competitors,
+        competitors: options.competitors ? sim.competitors : [],
         excerpt: runs.find((r) => r.excerpt)?.excerpt ?? null,
         grounded: sim.grounded,
         model: sim.model,
@@ -514,9 +519,14 @@ export async function loadAnswers(shopId: string): Promise<AnswersData> {
     }),
     appearances: simulations.reduce((sum, s) => sum + s.appearanceCount, 0),
     totalRuns: simulations.reduce((sum, s) => sum + s.runCount, 0),
-    leaderboard: [...tally.entries()]
-      .map(([name, mentions]) => ({ name, mentions }))
-      .sort((a, b) => b.mentions - a.mentions),
+    // Competitor names are a paid feature; the count is not. Free sees how
+    // many brands were named instead of theirs, and pays to see which.
+    competitorCount: tally.size,
+    leaderboard: options.competitors
+      ? [...tally.entries()]
+          .map(([name, mentions]) => ({ name, mentions }))
+          .sort((a, b) => b.mentions - a.mentions)
+      : [],
   };
 }
 

@@ -1,11 +1,17 @@
-import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
-import { useLoaderData, useRouteError } from "react-router";
+import type {
+  ActionFunctionArgs,
+  HeadersFunction,
+  LoaderFunctionArgs,
+} from "react-router";
+import { useFetcher, useLoaderData, useRouteError } from "react-router";
+import { useEffect } from "react";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 
 import { authenticate } from "../shopify.server";
 import { ensureShop, getPlanState } from "../services/billing.server";
 import { loadOverview } from "../services/dashboard.server";
+import { billingConfigured, planSelectionUrl } from "../services/subscription.server";
 import {
   COMPARISON,
   FREE_PLAN,
@@ -24,23 +30,58 @@ import styles from "../styles/plans.module.css";
 // Loader
 // ---------------------------------------------------------------------------
 
+/**
+ * The handle from `shopify.app.toml`. Part of the Shopify-hosted plan page
+ * URL, which is why the toml pins it.
+ */
+const APP_HANDLE = "refera";
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const shop = await ensureShop(session.shop);
 
+  // Shopify appends ?plan_handle= when it sends the merchant back here after
+  // approving a plan (this route is every plan's welcome link). A cached
+  // "free" from minutes ago is exactly wrong at that moment, so re-verify now.
+  const justApproved = new URL(request.url).searchParams.get("plan_handle");
+
   const [plan, overview] = await Promise.all([
-    getPlanState(shop.id),
+    getPlanState(shop.id, { forceVerify: justApproved !== null }),
     loadOverview(shop.id),
   ]);
 
   return {
     plan: plan.planHandle,
+    justApproved: justApproved !== null && plan.planHandle !== "free",
+    purchasable: billingConfigured(),
     hasUsedFreeScan: plan.hasUsedFreeScan,
     appearances: overview.appearances,
     totalRuns: overview.totalRuns,
     highSeverityIssueTypes: overview.topIssues.filter((g) => g.severity === "high")
       .length,
   };
+};
+
+// ---------------------------------------------------------------------------
+// Action
+// ---------------------------------------------------------------------------
+
+/**
+ * "Choose" sends the merchant to Shopify's own plan page. The charge is created
+ * and approved there, never here — Shopify App Pricing owns the whole flow, and
+ * an app that creates its own charges on top of it is a review rejection.
+ */
+export const action = async ({ request }: ActionFunctionArgs) => {
+  const { session, redirect } = await authenticate.admin(request);
+  const form = await request.formData();
+  if (form.get("intent") !== "choose") {
+    return { ok: false as const, error: "Unknown action." };
+  }
+  if (!billingConfigured()) {
+    return { ok: false as const, error: "Billing is not connected yet." };
+  }
+  // The plan page lives outside the app iframe.
+  return redirect(planSelectionUrl(session.shop, APP_HANDLE), { target: "_top" });
 };
 
 // ---------------------------------------------------------------------------
@@ -70,24 +111,36 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 export default function Plans() {
   const {
     plan,
+    justApproved,
+    purchasable,
     hasUsedFreeScan,
     appearances,
     totalRuns,
     highSeverityIssueTypes,
   } = useLoaderData<typeof loader>();
   const shopify = useAppBridge();
+  const fetcher = useFetcher<typeof action>();
+
+  useEffect(() => {
+    if (justApproved) shopify.toast.show("You're all set — your plan is active.");
+  }, [justApproved, shopify]);
+
+  useEffect(() => {
+    if (fetcher.data && !fetcher.data.ok) shopify.toast.show(fetcher.data.error);
+  }, [fetcher.data, shopify]);
 
   const recommended = recommendedPlan(appearances, totalRuns, highSeverityIssueTypes);
   // With no scan to reason from there is no recommendation to make, but the
   // page still needs exactly one primary button.
   const featured: PaidPlanId = recommended ?? "growth";
 
-  const choose = (chosen: PaidPlan) => {
-    // Billing is not connected yet. A Choose button that silently does nothing
-    // is worse than no button, so say so plainly.
-    shopify.toast.show(
-      `${chosen.name} is not purchasable yet — billing is not connected.`,
-    );
+  const choose = () => {
+    if (!purchasable) {
+      // A Choose button that silently does nothing is worse than no button.
+      shopify.toast.show("Billing is not connected yet.");
+      return;
+    }
+    fetcher.submit({ intent: "choose" }, { method: "post" });
   };
 
   return (
@@ -106,8 +159,8 @@ export default function Plans() {
                 <span className={styles.measured}>
                   Your store came up in {appearances} of {totalRuns} AI answers.
                 </span>{" "}
-                A paid plan keeps checking, and gives you the fix for every
-                product instead of five samples.
+                Your fixes are ready. A paid plan applies them, and keeps
+                checking.
               </>
             )}
           </p>
@@ -133,7 +186,7 @@ export default function Plans() {
               featured={tier.id === featured}
               recommended={tier.id === recommended}
               current={plan === tier.id}
-              onChoose={() => choose(tier)}
+              onChoose={choose}
             />
           ))}
         </div>
@@ -211,9 +264,9 @@ function PlanCard({
           <span className={styles.priceUnit}>/month</span>
         </span>
         <span className={styles.priceCaption}>
-          {tier.additionalStores.startsWith("$")
-            ? `Plus ${tier.additionalStores.toLowerCase()}`
-            : "One store"}
+          {tier.trialDays > 0
+            ? `${tier.trialDays}-day free trial, then billed monthly`
+            : "One store, billed monthly"}
         </span>
       </div>
 
@@ -223,7 +276,11 @@ function PlanCard({
         onClick={onChoose}
         disabled={current}
       >
-        {current ? "Current plan" : `Choose ${tier.name}`}
+        {current
+          ? "Current plan"
+          : tier.trialDays > 0
+            ? `Start ${tier.trialDays}-day free trial`
+            : `Choose ${tier.name}`}
       </button>
       <p className={styles.ctaCaption}>You&rsquo;ll approve the charge with Shopify.</p>
 

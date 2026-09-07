@@ -68,6 +68,13 @@ export const PRODUCT_BY_ID_QUERY = `#graphql
   }
 `;
 
+/** The shop GID the Partner API keys subscriptions on. */
+export const SHOP_ID_QUERY = `#graphql
+  query ShopId {
+    shop { id }
+  }
+`;
+
 export const SHOP_INFO_QUERY = `#graphql
   query ShopInfo {
     shop {

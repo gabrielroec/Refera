@@ -1,5 +1,4 @@
 import {
-  MAX_PRODUCTS_PER_SCAN,
   MIN_DESCRIPTION_LENGTH,
   MIN_METAFIELD_COUNT,
   PRODUCTS_PAGE_SIZE,
@@ -263,14 +262,14 @@ export async function fetchShopInfo(
 }
 
 /**
- * Pulls up to MAX_PRODUCTS_PER_SCAN active products, newest-updated first.
+ * Pulls up to `limit` active products, newest-updated first.
  *
  * Paginates rather than asking for 50 at once: the Admin API cost budget makes
  * a single large page with nested connections prone to throttling.
  */
 export async function fetchProducts(
   admin: AdminGraphQLClient,
-  limit: number = MAX_PRODUCTS_PER_SCAN,
+  limit: number,
 ): Promise<ScannedProduct[]> {
   const products: ScannedProduct[] = [];
   // A product edited between page fetches can shift past the cursor and come

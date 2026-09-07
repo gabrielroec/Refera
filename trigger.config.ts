@@ -68,6 +68,11 @@ export default defineConfig({
           "OPENAI_API_KEY",
           "OPENAI_MODEL",
           "OPENAI_FAST_MODEL",
+          // Shopify App Pricing: the apply-fixes job re-verifies the plan
+          // against the Partner API before writing to a store.
+          "SHOPIFY_PARTNER_ORG_ID",
+          "SHOPIFY_PARTNER_API_ACCESS_TOKEN",
+          "SHOPIFY_APP_GID",
         ];
 
         // OPENAI_FAST_MODEL is the one name allowed to be absent: the provider
@@ -75,7 +80,15 @@ export default defineConfig({
         // worker would deploy and then fail at runtime, so fail here instead —
         // silently shipping a worker without DATABASE_URL is the whole reason
         // this list is explicit.
-        const OPTIONAL = new Set(["OPENAI_FAST_MODEL", "LLM_GROUNDING"]);
+        // The Partner API trio is optional too: without it the app keeps the
+        // plan stored on the Shop row and never verifies it (local dev).
+        const OPTIONAL = new Set([
+          "OPENAI_FAST_MODEL",
+          "LLM_GROUNDING",
+          "SHOPIFY_PARTNER_ORG_ID",
+          "SHOPIFY_PARTNER_API_ACCESS_TOKEN",
+          "SHOPIFY_APP_GID",
+        ]);
 
         const missing = NEEDED.filter(
           (name) => !process.env[name] && !OPTIONAL.has(name),

@@ -1,5 +1,5 @@
 import prisma from "../db.server";
-import { CATALOG_SYNC_MAX_AGE_MS, MAX_PRODUCTS_PER_SCAN } from "../lib/constants";
+import { CATALOGUE_SYNC_CEILING, CATALOG_SYNC_MAX_AGE_MS } from "../lib/constants";
 import type { AdminGraphQLClient } from "../lib/graphql";
 import {
   fetchProductById,
@@ -61,7 +61,10 @@ export async function syncCatalogue(
   shopId: string,
   admin: AdminGraphQLClient,
 ): Promise<CatalogueProduct[]> {
-  const products = (await fetchProducts(admin, MAX_PRODUCTS_PER_SCAN)).map(withHash);
+  // The mirror always holds the whole catalogue (up to the ceiling): webhooks
+  // maintain every product regardless of plan, and the per-plan product cap is
+  // applied when a scan reads from it, not here.
+  const products = (await fetchProducts(admin, CATALOGUE_SYNC_CEILING)).map(withHash);
 
   await prisma.$transaction([
     prisma.productMirror.deleteMany({ where: { shopId } }),
@@ -83,11 +86,15 @@ export async function syncCatalogue(
 /**
  * Returns the catalogue for a scan, from the mirror when it is trustworthy and
  * from the Admin API (rebuilding the mirror) when it is not.
+ *
+ * `maxProducts` is the scan's plan quota: `null` reads everything, a number
+ * reads that many newest-updated products.
  */
 export async function loadCatalogue(
   shopId: string,
   admin: AdminGraphQLClient,
   log: (message: string, data?: Record<string, unknown>) => void,
+  maxProducts: number | null,
 ): Promise<CatalogueProduct[]> {
   const shop = await prisma.shop.findUniqueOrThrow({
     where: { id: shopId },
@@ -102,7 +109,7 @@ export async function loadCatalogue(
     const rows = await prisma.productMirror.findMany({
       where: { shopId, status: "ACTIVE" },
       orderBy: { shopifyUpdatedAt: "desc" },
-      take: MAX_PRODUCTS_PER_SCAN,
+      ...(maxProducts === null ? {} : { take: maxProducts }),
       select: { data: true },
     });
     if (rows.length > 0) {
@@ -114,7 +121,7 @@ export async function loadCatalogue(
   log("Rebuilding catalogue mirror from Admin API");
   const products = await syncCatalogue(shopId, admin);
   log("Catalogue synced", { count: products.length });
-  return products;
+  return maxProducts === null ? products : products.slice(0, maxProducts);
 }
 
 // ---------------------------------------------------------------------------

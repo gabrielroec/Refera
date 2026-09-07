@@ -3,12 +3,10 @@ import { mapWithConcurrency } from "../lib/concurrency";
 import {
   FIX_CONCURRENCY,
   FIX_PROMPT_VERSION,
-  MAX_PRODUCTS_WITH_FIXES,
   QUESTIONS_MAX_AGE_MS,
-  QUESTIONS_PER_SCAN,
-  RUNS_PER_QUESTION,
   SIMULATION_CONCURRENCY,
 } from "../lib/constants";
+import { eagerFixBudget, scanQuotaFrom } from "../lib/entitlements";
 import type { AdminGraphQLClient } from "../lib/graphql";
 import { stableHash } from "../lib/hash";
 import { loadCatalogue, type CatalogueProduct } from "./catalogue.server";
@@ -62,6 +60,10 @@ export async function runScanPipeline(
   });
   if (!scan) throw new Error(`Scan ${scanId} not found`);
 
+  // Frozen when the scan was enqueued; the plan may change while it runs.
+  const quota = scanQuotaFrom(scan.quota);
+  log("Scan quota", { plan: scan.planHandle ?? "unknown", ...quota });
+
   await prisma.scan.update({
     where: { id: scanId },
     data: {
@@ -76,7 +78,7 @@ export async function runScanPipeline(
     // -- 1. catalogue ---------------------------------------------------------
     const [shopInfo, products] = await Promise.all([
       fetchShopInfo(admin),
-      loadCatalogue(scan.shopId, admin, log),
+      loadCatalogue(scan.shopId, admin, log, quota.maxProducts),
     ]);
 
     if (products.length === 0) {
@@ -106,14 +108,15 @@ export async function runScanPipeline(
       scan.shopId,
       shopInfo,
       products,
+      quota.questions,
       log,
     );
 
     // -- 4. simulate ∥ fix ------------------------------------------------------
     await prisma.scan.update({ where: { id: scanId }, data: { phase: "simulating" } });
     const [simulations] = await Promise.all([
-      simulateAll(scanId, questions, store, log),
-      generateEagerFixes(admin, entries, store, log),
+      simulateAll(scanId, questions, store, quota.runs, log),
+      generateEagerFixes(admin, entries, store, eagerFixBudget(quota), log),
     ]);
 
     await prisma.scan.update({
@@ -247,7 +250,10 @@ async function persistSnapshots(
  * questions are what make consecutive scores comparable — the merchant sees
  * whether applied fixes moved the needle on the *same* questions. They are
  * always re-executed, never their answers: frequency is what we measure.
- * A currency change (the only input that comes from outside) invalidates the pin.
+ * A currency change (the only input that comes from outside) invalidates the
+ * pin, and so does a plan upgrade that asks for more questions than were
+ * pinned — the merchant gets a fresh, larger set, and comparability restarts
+ * from that scan.
  */
 async function resolveStoreContext(
   shopId: string,
@@ -258,6 +264,7 @@ async function resolveStoreContext(
     currencyCode: string;
   },
   products: CatalogueProduct[],
+  count: number,
   log: Log,
 ): Promise<{ store: StoreContext; questions: string[] }> {
   const shop = await prisma.shop.findUniqueOrThrow({
@@ -285,7 +292,7 @@ async function resolveStoreContext(
     fresh &&
     shop.niche &&
     shop.primaryLocale &&
-    pinned.length >= QUESTIONS_PER_SCAN &&
+    pinned.length >= count &&
     shop.storeContextHash === currencyHash
   ) {
     const store = buildStoreContext(
@@ -298,7 +305,7 @@ async function resolveStoreContext(
       products,
     );
     log("Reusing pinned niche and questions", { niche: shop.niche });
-    return { store, questions: pinned.slice(0, QUESTIONS_PER_SCAN) };
+    return { store, questions: pinned.slice(0, count) };
   }
 
   const { niche, language } = await detectNiche(products, shopInfo.name);
@@ -311,7 +318,7 @@ async function resolveStoreContext(
     language,
     products,
   );
-  const questions = await generateQuestions(store, QUESTIONS_PER_SCAN);
+  const questions = await generateQuestions(store, count);
 
   await prisma.shop.update({
     where: { id: shopId },
@@ -342,13 +349,14 @@ async function simulateAll(
   scanId: string,
   questions: string[],
   store: StoreContext,
+  runs: number,
   log: Log,
 ): Promise<SimulationResult[]> {
   const simulations = await mapWithConcurrency(
     questions,
     SIMULATION_CONCURRENCY,
     async (question) => {
-      const result = await runSimulation(question, store, RUNS_PER_QUESTION);
+      const result = await runSimulation(question, store, runs);
       await prisma.simulation.create({
         data: {
           scanId,
@@ -408,12 +416,13 @@ async function generateEagerFixes(
   admin: AdminGraphQLClient,
   entries: SnapshotEntry[],
   store: StoreContext,
+  budget: number,
   log: Log,
 ): Promise<void> {
   const ranked = entries
     .filter((e) => !e.carried && e.issues.some((i) => i.fixable))
     .sort((a, b) => scoreProduct(a.issues) - scoreProduct(b.issues))
-    .slice(0, MAX_PRODUCTS_WITH_FIXES);
+    .slice(0, budget);
 
   log("Generating fixes", { products: ranked.length });
 

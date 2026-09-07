@@ -45,9 +45,14 @@ export const FREE_PLAN = {
   maxProducts: MAX_PRODUCTS_PER_SCAN,
   productsLabel: `${MAX_PRODUCTS_PER_SCAN} per scan`,
   questions: QUESTIONS_PER_SCAN,
-  /** Fixes the merchant may look at. Applying any of them is a paid feature. */
-  maxFixes: 5,
-  fixesLabel: "5 samples, preview only",
+  /**
+   * Every fix is written and shown; applying any of them is a paid feature.
+   * Showing all of them, locked, is the conversion lever: a merchant who can
+   * see 111 ready fixes has more reason to pay than one who sees 5 samples.
+   * `null` means no cap, same as the paid tiers.
+   */
+  maxFixes: null,
+  fixesLabel: "All fixes, preview only",
   competitors: false,
   history: "Current scan only",
   support: "Documentation",
@@ -59,6 +64,12 @@ export interface PaidPlan {
   /** One line on who this is for. Sits above the price on the card. */
   positioning: string;
   priceUsd: number;
+  /**
+   * Free-trial length in days, charged automatically by Shopify at the end.
+   * Only Starter carries one: the trial is the bridge from the single free
+   * scan into paying, not a discount on every tier.
+   */
+  trialDays: number;
   /** Header above the four value rows, so each card carries the one before it. */
   carryForward: string;
 
@@ -97,6 +108,7 @@ export const PAID_PLANS: PaidPlan[] = [
     name: "Starter",
     positioning: "For a single store that wants to keep checking.",
     priceUsd: 39,
+    trialDays: 14,
     carryForward: "Includes:",
     scansPerMonth: 2,
     cadence: null,
@@ -111,6 +123,7 @@ export const PAID_PLANS: PaidPlan[] = [
     name: "Growth",
     positioning: "For stores that need to move, and to see who AI recommends instead.",
     priceUsd: 99,
+    trialDays: 0,
     carryForward: "Everything in Starter, plus:",
     scansPerMonth: 4,
     cadence: "weekly",
@@ -125,6 +138,7 @@ export const PAID_PLANS: PaidPlan[] = [
     name: "Scale",
     positioning: "For agencies and multi-store merchants.",
     priceUsd: 299,
+    trialDays: 0,
     carryForward: "Everything in Growth, plus:",
     scansPerMonth: 8,
     cadence: "twice weekly",

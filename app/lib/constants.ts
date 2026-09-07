@@ -6,8 +6,16 @@
  * product means editing this file and nothing else.
  */
 
-/** Hard cap on products pulled per scan (MVP rule). */
+/** Products the free plan reads per scan. Paid plans read the whole catalogue. */
 export const MAX_PRODUCTS_PER_SCAN = 50;
+
+/**
+ * Upper bound on products mirrored from the Admin API in one sync, whatever
+ * the plan. "All products" on a paid tier means all of them up to this; a
+ * catalogue beyond it would take minutes of paginated reads per sync and is
+ * not a store this MVP is built for.
+ */
+export const CATALOGUE_SYNC_CEILING = 2000;
 
 /** How many buyer-intent questions we generate per scan. */
 export const QUESTIONS_PER_SCAN = 10;

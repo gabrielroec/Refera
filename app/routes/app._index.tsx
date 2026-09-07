@@ -11,6 +11,7 @@ import { tasks } from "@trigger.dev/sdk";
 
 import prisma from "../db.server";
 import { authenticate } from "../shopify.server";
+import { scanQuotaFor } from "../lib/entitlements";
 import { ensureShop, getPlanState } from "../services/billing.server";
 import { loadLatestScanState, loadOverview } from "../services/dashboard.server";
 import { rescueStuckFixGenerations } from "../services/scan-state.server";
@@ -27,12 +28,20 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const shop = await ensureShop(session.shop);
 
-  const [plan, latest, overview] = await Promise.all([
+  const [plan, latest, full] = await Promise.all([
     getPlanState(shop.id),
     loadLatestScanState(shop.id),
     loadOverview(shop.id),
     rescueStuckFixGenerations(shop.id),
   ]);
+
+  // Competitor names are a paid feature. Free keeps the count — knowing that
+  // AI named eleven other brands is what makes the upgrade worth it.
+  const overview = {
+    ...full,
+    competitorCount: full.competitors.length,
+    competitors: plan.entitlements.competitorTracking ? full.competitors : [],
+  };
 
   return { plan, latest, overview };
 };
@@ -81,7 +90,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   let scan;
   try {
     scan = await prisma.scan.create({
-      data: { shopId: shop.id, status: "queued" },
+      data: {
+        shopId: shop.id,
+        status: "queued",
+        // Frozen here so the worker never has to ask what the plan is.
+        planHandle: plan.planHandle,
+        quota: { ...scanQuotaFor(plan.entitlements) },
+      },
     });
   } catch (error) {
     // A partial unique index allows one queued-or-running scan per shop, which
@@ -248,7 +263,13 @@ export default function Overview() {
         </s-section>
       )}
 
-      {!scan && !polling && <EmptyState onRun={runScan} busy={busy} />}
+      {!scan && !polling && (
+        <EmptyState
+          productLimit={plan.entitlements.maxProducts}
+          onRun={runScan}
+          busy={busy}
+        />
+      )}
 
       {scan && (
         <>
@@ -351,6 +372,25 @@ export default function Overview() {
             </s-section>
           )}
 
+          {overview.competitors.length === 0 && overview.competitorCount > 0 && (
+            <s-section heading="Who AI recommends instead">
+              <s-stack direction="block" gap="base">
+                <s-text>
+                  Across {overview.totalRuns} answers, AI named{" "}
+                  {overview.competitorCount} other brand
+                  {overview.competitorCount === 1 ? "" : "s"} — yours{" "}
+                  {overview.appearances > 0
+                    ? `${overview.appearances} time${overview.appearances === 1 ? "" : "s"}`
+                    : "never"}
+                  . Competitor tracking on Growth shows you which.
+                </s-text>
+                <s-button href="/app/plans" variant="secondary">
+                  See plans
+                </s-button>
+              </s-stack>
+            </s-section>
+          )}
+
           {overview.competitors.length > 0 && (
             <s-section heading="Who AI recommends instead">
               <s-stack direction="block" gap="base">
@@ -402,7 +442,16 @@ export default function Overview() {
 // States
 // ---------------------------------------------------------------------------
 
-function EmptyState({ onRun, busy }: { onRun: () => void; busy: boolean }) {
+function EmptyState({
+  onRun,
+  busy,
+  productLimit,
+}: {
+  onRun: () => void;
+  busy: boolean;
+  /** Products this plan reads per scan; null is the whole catalogue. */
+  productLimit: number | null;
+}) {
   return (
     <s-section heading="See how AI assistants see your store">
       <s-stack direction="block" gap="base">
@@ -411,8 +460,10 @@ function EmptyState({ onRun, busy }: { onRun: () => void; busy: boolean }) {
           ChatGPT, and measures whether your store shows up in the answers.
         </s-paragraph>
         <s-paragraph color="subdued">
-          The scan reads up to 50 products and takes a couple of minutes.
-          Nothing in your store changes without your approval.
+          The scan reads{" "}
+          {productLimit === null ? "your whole catalogue" : `up to ${productLimit} products`}{" "}
+          and takes a couple of minutes. Nothing in your store changes without
+          your approval.
         </s-paragraph>
         <s-box>
           <s-button variant="primary" onClick={onRun} {...(busy ? { disabled: true } : {})}>

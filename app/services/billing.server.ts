@@ -2,19 +2,15 @@ import prisma from "../db.server";
 import { entitlementsFor, type Entitlements } from "../lib/entitlements";
 import type { PlanId } from "../lib/plans";
 import { rescueStuckScan } from "./scan-state.server";
+import { reconcilePlan } from "./subscription.server";
 
 /**
  * What a shop is allowed to do right now.
  *
  * `Shop.planHandle` is the local record of what Shopify says the merchant
- * subscribed to. Reconciling that column against Shopify is a separate concern
- * (see the plan for `subscription.server.ts`); this file only reads it and
- * answers the two questions the UI asks: can they scan, and can they apply.
- *
- * Note on staleness: once reconciliation exists, a `planVerifiedAt` older than
- * the refresh window has to mean "re-verify", never "not paying" — a transient
- * API failure must not read as a cancelled subscription. That check belongs with
- * the reconcile, not here, because there is nothing to re-verify against yet.
+ * subscribed to. `subscription.server.ts` keeps that column honest against the
+ * Partner API; this file re-verifies it when it is stale and then answers the
+ * two questions the UI asks: can they scan, and can they apply.
  */
 
 export interface PlanState {
@@ -32,7 +28,16 @@ export interface PlanState {
   blockedReason: "in-progress" | "free-scan-used" | "monthly-limit" | null;
 }
 
-export async function getPlanState(shopId: string): Promise<PlanState> {
+export async function getPlanState(
+  shopId: string,
+  options: { forceVerify?: boolean } = {},
+): Promise<PlanState> {
+  const current = await prisma.shop.findUniqueOrThrow({
+    where: { id: shopId },
+    select: { id: true, domain: true, planVerifiedAt: true },
+  });
+  await reconcilePlan(current, { force: options.forceVerify });
+
   const shop = await prisma.shop.findUniqueOrThrow({
     where: { id: shopId },
     select: {

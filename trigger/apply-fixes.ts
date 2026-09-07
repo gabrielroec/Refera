@@ -1,5 +1,6 @@
 import { logger, task } from "@trigger.dev/sdk";
 import prisma from "../app/db.server";
+import { getPlanState } from "../app/services/billing.server";
 import { refreshMirroredProduct } from "../app/services/catalogue.server";
 import { applyFix } from "../app/services/fixer.server";
 import { unauthenticated } from "../app/shopify.server";
@@ -38,10 +39,32 @@ export const applyFixesTask = task({
     logger.info("Applying fixes", { count: payload.fixIds.length });
 
     try {
+      // The route gated this already, but the queue is a boundary: a plan can
+      // lapse between the click and the run, and a job that writes to a live
+      // catalogue is the one place the gate must not be trusted second-hand.
+      // Ownership is enforced here too: only fixes belonging to this shop.
+      const shop = await prisma.shop.findUniqueOrThrow({
+        where: { domain: payload.shopDomain },
+        select: { id: true },
+      });
+      const plan = await getPlanState(shop.id);
+      if (!plan.canApplyFixes) {
+        await prisma.fix.updateMany({
+          where: { id: { in: payload.fixIds }, status: "approved", appliedAt: null },
+          data: { status: "suggested", error: "Applying fixes needs a paid plan." },
+        });
+        logger.warn("Apply refused: plan does not allow it", { plan: plan.planHandle });
+        return { applied: 0, failed: payload.fixIds.length };
+      }
+
       const { admin } = await unauthenticated.admin(payload.shopDomain);
 
       const fixes = await prisma.fix.findMany({
-        where: { id: { in: payload.fixIds }, status: "approved" },
+        where: {
+          id: { in: payload.fixIds },
+          status: "approved",
+          productSnapshot: { scan: { shopId: shop.id } },
+        },
         include: { productSnapshot: { select: { productId: true } } },
         orderBy: { createdAt: "asc" },
       });
